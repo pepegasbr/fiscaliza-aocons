@@ -6,6 +6,116 @@ const URL_API_HABBO = 'https://www.habbo.com.br/api/public/users';
 const ID_TOPICO_FORUM = 32243;
 const ID_TOPICO_MEDALHA = 36745;
 
+// ═══════════════════════════════════════════════════════════════════════════
+// INTEGRAÇÃO COM GOOGLE SHEETS - Sistema de Registro de Verificações
+// ═══════════════════════════════════════════════════════════════════════════
+
+// IMPORTANTE: Substitua esta URL pela URL do seu Web App após fazer o deploy do Apps Script
+const SHEETS_WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbzzEUQN5twPDbTAbUQA27ysVi-PAwbgoQe1w8BQwY2f8_jzlhI2NPvYpETkYgfe5qdl/exec';
+
+// Variável global para armazenar o nickname do verificador atual
+let verificadorAtual = localStorage.getItem('verificadorNick') || '';
+
+// Fila de envio assíncrona para não bloquear a UI
+const filaEnvioSheets = [];
+let enviandoParaSheets = false;
+
+/**
+ * Envia dados para a planilha em background (não bloqueia a UI)
+ * @param {Object} dados - Dados a serem enviados
+ */
+function enviarParaPlanilha(dados) {
+    // Se não houver URL configurada, não faz nada
+    if (!SHEETS_WEB_APP_URL || SHEETS_WEB_APP_URL.includes('COLE_SUA_URL_AQUI')) {
+        console.warn('[Sheets] URL do Web App não configurada');
+        return;
+    }
+
+    // Adiciona à fila
+    filaEnvioSheets.push(dados);
+
+    // Processa a fila se não estiver processando
+    if (!enviandoParaSheets) {
+        processarFilaSheets();
+    }
+}
+
+/**
+ * Processa a fila de envios de forma assíncrona
+ */
+async function processarFilaSheets() {
+    if (filaEnvioSheets.length === 0) {
+        enviandoParaSheets = false;
+        return;
+    }
+
+    enviandoParaSheets = true;
+    const dados = filaEnvioSheets.shift();
+
+    try {
+        // Usa fetch com no-cors para evitar bloqueios CORS
+        // keepalive: true garante que o envio continue mesmo se a página for fechada
+        await fetch(SHEETS_WEB_APP_URL, {
+            method: 'POST',
+            mode: 'no-cors',
+            keepalive: true,
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(dados)
+        });
+        console.log('[Sheets] Dados enviados:', dados.tipo);
+    } catch (erro) {
+        // Ignora erros silenciosamente para não atrapalhar o usuário
+        console.warn('[Sheets] Erro ao enviar:', erro.message);
+    }
+
+    // Continua processando a fila após um pequeno delay
+    setTimeout(processarFilaSheets, 100);
+}
+
+/**
+ * Registra uma verificação completa na planilha
+ */
+function registrarVerificacaoNaPlanilha(inativos, graduacao, offline, removerForum, textoSystem = '') {
+    enviarParaPlanilha({
+        tipo: 'verificacao',
+        verificador: verificadorAtual,
+        totalInativos: inativos.length,
+        totalGraduacao: graduacao.length,
+        totalOffline: offline.length,
+        totalRemoverForum: removerForum.length,
+        totalGeral: inativos.length + graduacao.length + offline.length + removerForum.length,
+        // Dados completos de cada categoria (com info de grupo/fórum)
+        membrosInativos: inativos.map(m => ({ nick: m.nick, noGrupo: m.noGrupo, estaNoForum: m.estaNoForum })),
+        membrosGraduacao: graduacao.map(m => ({ nick: m.nick, noGrupo: m.noGrupo, estaNoForum: m.estaNoForum })),
+        membrosOffline: offline.map(m => ({ nick: m.nick, noGrupo: m.noGrupo, estaNoForum: m.estaNoForum })),
+        membrosRemoverForum: removerForum.map(m => ({ nick: m.nick })),
+        // Lista completa do System (para a aba System)
+        nicksSystem: textoSystem
+    });
+}
+
+/**
+ * Registra uma ação individual (checkbox marcado) na planilha
+ */
+function registrarAcaoNaPlanilha(categoria, nickMembro, cargoMembro, tipoAcao, marcado, observacoes = '') {
+    enviarParaPlanilha({
+        tipo: 'acao',
+        verificador: verificadorAtual,
+        categoria: categoria,
+        nickMembro: nickMembro,
+        cargoMembro: cargoMembro,
+        tipoAcao: tipoAcao,
+        marcado: marcado,
+        sucesso: true,
+        observacoes: observacoes
+    });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FIM DA INTEGRAÇÃO COM GOOGLE SHEETS
+// ═══════════════════════════════════════════════════════════════════════════
 
 const TEMPLATE_MP_EXPULSAO = `[font=Poppins]<div style="border:1.5rem solid #821F88;border-radius:8px;font-family:Poppins;">[/font][table][tr][td][center][img]https://i.imgur.com/hU7bn8R.gif[/img][/center]
 
@@ -22,6 +132,7 @@ Informa-se que você foi[b] expulso(a) de nossa companhia e penalizado com cem (
 Leia as documentações que regem a companhia [url=https://sites.google.com/view/nexusprof/documenta%C3%A7%C3%B5es?authuser=3]clicando aqui[/url]. Caso queira recorrer da punição recebida, procure a Liderança apresentando argumentos factuais e plausíveis. Sinta-se à vontade para refazer o teste de admissão para a companhia ou ingressar em uma outra.[/justify]</div>[/td][/tr][/table]</div>
 [font=Poppins][center]Atentamente,
 [img]https://i.imgur.com/1kZvQHs.png[/img][/center][/font]`;
+
 
 const TEMPLATE_MP_REBAIXAMENTO = `[font=Poppins]<div style="border:1.5rem solid #821F88;border-radius:8px;font-family:Poppins;">[/font][table][tr][td][center][img]https://i.imgur.com/hU7bn8R.gif[/img][/center]
 
@@ -145,8 +256,75 @@ botaoVerificar.addEventListener('click', () => {
     if (!textoSystem.trim()) return alert('Por favor, cole a lista do System primeiro.');
     if (!textoForum.trim()) return alert('Por favor, cole a lista de membros do Fórum.');
 
-    iniciarVerificacao();
+    // Abre o modal para solicitar o nickname do verificador
+    abrirModalVerificador();
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MODAL DO VERIFICADOR
+// ═══════════════════════════════════════════════════════════════════════════
+
+function abrirModalVerificador() {
+    const modal = document.getElementById('modal-verificador');
+    const fundo = document.getElementById('fundo-modal-verificador');
+    const painel = document.getElementById('painel-modal-verificador');
+    const input = document.getElementById('input-verificador-nick');
+
+    // Preenche com o último nick usado (se houver)
+    input.value = localStorage.getItem('verificadorNick') || '';
+
+    modal.classList.remove('hidden');
+    setTimeout(() => {
+        fundo.classList.remove('opacity-0');
+        painel.classList.remove('scale-95', 'opacity-0');
+        painel.classList.add('scale-100', 'opacity-100');
+        input.focus();
+    }, 10);
+
+    // Permite confirmar com Enter
+    input.onkeydown = (e) => {
+        if (e.key === 'Enter') {
+            confirmarVerificador();
+        }
+    };
+}
+
+window.fecharModalVerificador = function () {
+    const modal = document.getElementById('modal-verificador');
+    const fundo = document.getElementById('fundo-modal-verificador');
+    const painel = document.getElementById('painel-modal-verificador');
+
+    fundo.classList.add('opacity-0');
+    painel.classList.remove('scale-100', 'opacity-100');
+    painel.classList.add('scale-95', 'opacity-0');
+    setTimeout(() => {
+        modal.classList.add('hidden');
+    }, 300);
+};
+
+window.confirmarVerificador = function () {
+    const input = document.getElementById('input-verificador-nick');
+    const nick = input.value.trim();
+
+    if (!nick) {
+        alert('Por favor, digite seu nickname para continuar.');
+        input.focus();
+        return;
+    }
+
+    // Salva o nickname
+    verificadorAtual = nick;
+    localStorage.setItem('verificadorNick', nick);
+
+    // Fecha o modal
+    fecharModalVerificador();
+
+    // Inicia a verificação após um pequeno delay para a animação
+    setTimeout(() => {
+        iniciarVerificacao();
+    }, 350);
+};
+
 
 async function iniciarVerificacao() {
     const textoSystem = document.getElementById('lista-gratificacoes').value;
@@ -242,6 +420,10 @@ async function iniciarVerificacao() {
 
         alternarCarregamento(false);
         exibirResultados(inativosFinal, offline, graduacaoFinal, removerDoForum);
+
+        // Registra a verificação na planilha do Google Sheets (em background)
+        registrarVerificacaoNaPlanilha(inativosFinal, graduacaoFinal, offline, removerDoForum, textoSystem);
+
 
     } catch (erro) {
         alternarCarregamento(false);
@@ -553,6 +735,15 @@ window.desconsiderarMembro = function (tipo, idx) {
 
     // Atualiza o progresso da aba
     verificarProgressoAba(tipo);
+
+    // Registra a ação de desconsiderar na planilha (em background)
+    const nickElement = card.querySelector('h4');
+    const cargoElement = card.querySelector('p.font-mono');
+    if (nickElement) {
+        const nick = nickElement.textContent;
+        const cargo = cargoElement ? cargoElement.textContent : '';
+        registrarAcaoNaPlanilha(tipo, nick, cargo, 'desconsiderado', !isDesconsiderado, isDesconsiderado ? 'Membro restaurado' : 'Dado incorreto');
+    }
 };
 
 window.alternarTab = function (tipo) {
@@ -573,6 +764,18 @@ window.verificarProgressoAba = function (tipo) {
     } else {
         badge.classList.add('pulse-active');
     }
+};
+
+/**
+ * Registra um checkbox marcado/desmarcado
+ * Atualiza a UI imediatamente e envia para a planilha em background
+ */
+window.registrarCheckbox = function (checkbox, categoria, nickMembro, cargoMembro, tipoAcao) {
+    // Atualiza o progresso da aba IMEDIATAMENTE (UI responsiva)
+    verificarProgressoAba(categoria);
+
+    // Registra na planilha em BACKGROUND (não bloqueia a UI)
+    registrarAcaoNaPlanilha(categoria, nickMembro, cargoMembro, tipoAcao, checkbox.checked);
 };
 
 window.atualizarProgressoPorCheckboxId = function (chkId) {
@@ -687,7 +890,7 @@ function criarCardMembro(m, idx, tipo) {
                         
                         <div class="grid grid-cols-2 md:grid-cols-3 gap-2 text-left">
                             <label class="checkbox-wrapper flex items-center text-xs text-slate-600 dark:text-slate-300 bg-sky-50 dark:bg-sky-800/30 p-2 rounded cursor-pointer hover:bg-sky-100 dark:hover:bg-sky-800 transition-colors border border-sky-200 dark:border-sky-700">
-                                <input type="checkbox" onchange="verificarProgressoAba('${tipo}')" id="chk-remover-${tipo}-${idx}">
+                                <input type="checkbox" onchange="registrarCheckbox(this, '${tipo}', '${m.nick}', '${m.status || ''}', 'remover')" id="chk-remover-${tipo}-${idx}">
                                 <span class="ml-2 font-semibold text-sky-700 dark:text-sky-300">Remover do Subfórum</span>
                             </label>
                             <a href="https://www.policiarcc.com/g10-professores" target="_blank" class="flex items-center text-xs text-slate-600 dark:text-slate-300 bg-slate-50 dark:bg-slate-800/30 p-2 rounded cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors gap-2">
@@ -719,17 +922,17 @@ function criarCardMembro(m, idx, tipo) {
                     
                     <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2 text-left">
                         <label class="checkbox-wrapper flex items-center text-xs text-slate-600 dark:text-slate-300 bg-slate-50 dark:bg-slate-800/30 p-2 rounded cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
-                            <input type="checkbox" onchange="verificarProgressoAba('${tipo}')" id="chk-req-${tipo}-${idx}">
+                            <input type="checkbox" onchange="registrarCheckbox(this, '${tipo}', '${m.nick}', '${m.cargo}', 'req')" id="chk-req-${tipo}-${idx}">
                             <span class="ml-2">Requerimento</span>
                         </label>
                         
                         ${tipo !== 'inativos' ? `
                         <label class="checkbox-wrapper flex items-center text-xs text-slate-600 dark:text-slate-300 bg-slate-50 dark:bg-slate-800/30 p-2 rounded cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
-                            <input type="checkbox" onchange="verificarProgressoAba('${tipo}')" id="chk-mp-${tipo}-${idx}">
+                            <input type="checkbox" onchange="registrarCheckbox(this, '${tipo}', '${m.nick}', '${m.cargo}', 'mp')" id="chk-mp-${tipo}-${idx}">
                             <span class="ml-2">MP Enviada</span>
                         </label>
                         <label class="checkbox-wrapper flex items-center text-xs text-slate-600 dark:text-slate-300 bg-slate-50 dark:bg-slate-800/30 p-2 rounded cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
-                            <input type="checkbox" onchange="verificarProgressoAba('${tipo}')" id="chk-medal-${tipo}-${idx}">
+                            <input type="checkbox" onchange="registrarCheckbox(this, '${tipo}', '${m.nick}', '${m.cargo}', 'medal')" id="chk-medal-${tipo}-${idx}">
                             <span class="ml-2">Medalha</span>
                         </label>` : ''}
 
