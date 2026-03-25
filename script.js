@@ -22,6 +22,7 @@ const ID_GRUPO_DEP_APLICACAO = 'g-hhbr-d6c10ba3ac926a89d16c46c217960b6f';
 const ID_GRUPO_CDC = 'g-hhbr-b7293bcaf77d1a7ef22ee7b274bc78a9';
 const ID_GRUPO_CORREGEDORIA = 'g-hhbr-8e057e366f037ccbc2a5de1bdbb8f6a0';
 const ID_GRUPO_GATE = 'g-hhbr-6a69ea77637188b67832c7b8e034bf5c';
+const ID_GRUPO_GSS = 'g-hhbr-4d2f8fa6bad619fb52f9f9b97de71a87';
 
 const ID_TOPICO_FORUM = 32243;
 const ID_TOPICO_MEDALHA = 36745;
@@ -842,16 +843,17 @@ async function iniciarVerificacao(modo) {
             if (!nick) return;
             if (cargo.toLowerCase().includes('consultor') || cargo.toLowerCase().includes('honrosa')) return;
 
+            const estaLicenciado = (linha[7] && linha[7].trim().length > 0);
             const nickNormalizado = nick.toLowerCase().replace(/[\u200B-\u200D\uFEFF]/g, '');
 
             // Adiciona ao mapa com dados vitais
             mapaMembrosOficiais.set(nickNormalizado, {
                 nick,
                 cargo,
-                cargoLower: cargo.toLowerCase()
+                cargoLower: cargo.toLowerCase(),
+                estaLicenciado
             });
 
-            const estaLicenciado = (linha[7] && linha[7].trim().length > 0);
             const estaNoForum = textoForumBruto && textoForumBruto.toLowerCase().includes(nick.toLowerCase());
             const subforunsDoMembro = obterSubforunsDoMembro(nick);
 
@@ -895,22 +897,30 @@ async function iniciarVerificacao(modo) {
         // VERIFICAÇÃO AUTOMÁTICA: Grupos do Habbo (busca via API)
         const retirarDosGrupos = await verificarMembrosGruposHabbo(mapaMembrosOficiais, nicksAtivos, prioridadeDireto);
 
-        // VERIFICAÇÃO DE ATIVIDADE (Offline)
-        const offline = await verificarAtividadeHabbo(membrosParaVerificar, prioridadeDireto);
+        // VERIFICAÇÃO DE ATIVIDADE (Offline) - Agora usa os sets já buscados para economizar API
+        const offline = await verificarAtividadeHabbo(membrosParaVerificar, prioridadeDireto, retirarDosGrupos.sets);
 
-        // Enriquecer listas com informações de subgrupos (SPP, DA, CDC)
-        const enriquecerComSubgrupos = (lista) => {
+        // Enriquecer listas com informações de subgrupos e grupos principais (Prof/Grad)
+        const enriquecerComDadosHabbo = (lista) => {
             lista.forEach(m => {
                 m.subgruposHabbo = [];
                 const nickLower = m.nick.toLowerCase();
                 if (retirarDosGrupos.sets.spp.has(nickLower)) m.subgruposHabbo.push('SPP');
                 if (retirarDosGrupos.sets.dep.has(nickLower)) m.subgruposHabbo.push('Dep. Aplicação');
                 if (retirarDosGrupos.sets.cdc.has(nickLower)) m.subgruposHabbo.push('CDC');
+
+                // Adiciona status de grupos principais (Professores/Graduadores)
+                m.noProfessores = retirarDosGrupos.sets.prof.has(nickLower);
+                m.noGraduadores = retirarDosGrupos.sets.grad.has(nickLower);
+                m.noGrupo = m.noProfessores || m.noGraduadores;
+
+                // Verifica se é administrador (usa o set construído durante a verificação de grupos)
+                m.isAdminNoGrupo = retirarDosGrupos.sets.admins.has(nickLower);
             });
         };
-        enriquecerComSubgrupos(inativosFinal);
-        enriquecerComSubgrupos(graduacaoFinal);
-        enriquecerComSubgrupos(offline);
+        enriquecerComDadosHabbo(inativosFinal);
+        enriquecerComDadosHabbo(graduacaoFinal);
+        enriquecerComDadosHabbo(offline);
 
         alternarCarregamento(false);
         exibirResultados(inativosFinal, offline, graduacaoFinal, removerDoForum, retirarDosGrupos);
@@ -1054,14 +1064,15 @@ async function verificarMembrosGruposHabbo(mapaMembrosOficiais, nicksNoSystem, p
             buscarMembrosGrupoHabbo(ID_GRUPO_GRADUADORES, prioridadeDireto),    // 1: Graduadores (Alvo Remoção)
             buscarMembrosGrupoHabbo(ID_GRUPO_CORREGEDORIA, prioridadeDireto),   // 2: Corregedoria (Imunidade)
             buscarMembrosGrupoHabbo(ID_GRUPO_GATE, prioridadeDireto),           // 3: GATE (Imunidade)
-            buscarMembrosGrupoHabbo(ID_GRUPO_SPP, prioridadeDireto),            // 4: SPP (Aviso)
-            buscarMembrosGrupoHabbo(ID_GRUPO_DEP_APLICACAO, prioridadeDireto),  // 5: Dep. Aplicação (Aviso)
-            buscarMembrosGrupoHabbo(ID_GRUPO_CDC, prioridadeDireto)             // 6: CDC (Aviso)
+            buscarMembrosGrupoHabbo(ID_GRUPO_GSS, prioridadeDireto),            // 4: GSS (Imunidade)
+            buscarMembrosGrupoHabbo(ID_GRUPO_SPP, prioridadeDireto),            // 5: SPP (Aviso)
+            buscarMembrosGrupoHabbo(ID_GRUPO_DEP_APLICACAO, prioridadeDireto),  // 6: Dep. Aplicação (Aviso)
+            buscarMembrosGrupoHabbo(ID_GRUPO_CDC, prioridadeDireto)             // 7: CDC (Aviso)
         ];
 
         const [
             membrosProf, membrosGrad,
-            membrosCorregedoria, membrosGate,
+            membrosCorregedoria, membrosGate, membrosGss,
             membrosSpp, membrosDep, membrosCdc
         ] = await Promise.all(promises);
 
@@ -1069,9 +1080,12 @@ async function verificarMembrosGruposHabbo(mapaMembrosOficiais, nicksNoSystem, p
         // Normalizamos tudo para lowercase para comparação insensível a maiúsculas/minúsculas
         const setCorregedoria = new Set(membrosCorregedoria.map(m => m.name.toLowerCase()));
         const setGate = new Set(membrosGate.map(m => m.name.toLowerCase()));
+        const setGss = new Set(membrosGss.map(m => m.name.toLowerCase()));
         const setSpp = new Set(membrosSpp.map(m => m.name.toLowerCase()));
         const setDep = new Set(membrosDep.map(m => m.name.toLowerCase()));
         const setCdc = new Set(membrosCdc.map(m => m.name.toLowerCase()));
+        const setProf = new Set(membrosProf.map(m => m.name.toLowerCase()));
+        const setGrad = new Set(membrosGrad.map(m => m.name.toLowerCase()));
 
         // Mapa para consolidar informações dos membros (evita duplicatas se estiver em Prof e Grad)
         const nickMap = new Map();
@@ -1110,13 +1124,16 @@ async function verificarMembrosGruposHabbo(mapaMembrosOficiais, nicksNoSystem, p
                 const eContaImuneHardcoded = contasImunesHardcoded.includes(nickLower);
                 const estaCorregedoria = setCorregedoria.has(nickLower);
                 const estaGate = setGate.has(nickLower);
-                const eImune = eContaImuneHardcoded || estaCorregedoria || estaGate;
+                const estaGss = setGss.has(nickLower);
+                const eImune = eContaImuneHardcoded || estaCorregedoria || estaGate || estaGss;
 
                 // Verifica status de regularidade
                 const dadosOficiais = mapaMembrosOficiais.get(nickLower);
                 const isOfficial = !!dadosOficiais;
                 const isNoSystem = nicksNoSystem && nicksNoSystem.has(nickLower);
-                const isRegular = isOfficial || isNoSystem;
+                
+                // MUDANÇA (Ajuste Final): Para esta aba de intrusos, o único critério é estar na PLANILHA
+                const isRegular = isOfficial;
 
                 // LOGICA DE PERMISSÃO DE GRUPO (CRUCIAL)
                 let temPermissaoParaEsteGrupo = true;
@@ -1154,23 +1171,30 @@ async function verificarMembrosGruposHabbo(mapaMembrosOficiais, nicksNoSystem, p
         const retirar = [];
         const imunes = [];
         const subgrupos = [];
+        const admins = new Set();
 
         for (const [nickLower, dados] of nickMap) {
+            // Salva se é admin em um Set global para enriquecimento posterior
+            if (dados.isAdminNoGrupo) admins.add(nickLower);
+
             // Verifica Imunidade
             const eContaImune = contasImunesHardcoded.includes(nickLower);
             const estaCorregedoria = setCorregedoria.has(nickLower);
             const estaGate = setGate.has(nickLower);
+            const estaGss = setGss.has(nickLower);
 
-            if (eContaImune || estaCorregedoria || estaGate) {
+            if (eContaImune || estaCorregedoria || estaGate || estaGss) {
                 dados.eImune = true;
                 if (eContaImune) dados.motivoImune = 'Conta Especial';
                 else if (estaCorregedoria) dados.motivoImune = 'Corregedoria';
-                else dados.motivoImune = 'GATE';
+                else if (estaGate) dados.motivoImune = 'GATE';
+                else dados.motivoImune = 'GSS';
 
                 imunes.push({
                     nick: dados.nick,
                     grupos: Array.from(dados.grupos),
-                    motivoImune: dados.motivoImune
+                    motivoImune: dados.motivoImune,
+                    isAdminNoGrupo: dados.isAdminNoGrupo
                 });
                 continue; // Membro imune, passa para o próximo
             }
@@ -1184,7 +1208,8 @@ async function verificarMembrosGruposHabbo(mapaMembrosOficiais, nicksNoSystem, p
                 subgrupos.push({
                     nick: dados.nick,
                     grupos: Array.from(dados.grupos),
-                    subgrupos: dados.subgrupos
+                    subgrupos: dados.subgrupos,
+                    isAdminNoGrupo: dados.isAdminNoGrupo
                 });
             }
 
@@ -1192,6 +1217,7 @@ async function verificarMembrosGruposHabbo(mapaMembrosOficiais, nicksNoSystem, p
             retirar.push({
                 nick: dados.nick,
                 grupos: Array.from(dados.grupos),
+                isAdminNoGrupo: dados.isAdminNoGrupo,
                 status: 'Não consta na listagem dos professores'
             });
         }
@@ -1200,7 +1226,7 @@ async function verificarMembrosGruposHabbo(mapaMembrosOficiais, nicksNoSystem, p
             retirar,
             imunes,
             subgrupos,
-            sets: { spp: setSpp, dep: setDep, cdc: setCdc }
+            sets: { spp: setSpp, dep: setDep, cdc: setCdc, prof: setProf, grad: setGrad, admins }
         };
 
     } catch (erro) {
@@ -1210,7 +1236,7 @@ async function verificarMembrosGruposHabbo(mapaMembrosOficiais, nicksNoSystem, p
     }
 }
 
-async function verificarAtividadeHabbo(membros, prioridadeDireto = false) {
+async function verificarAtividadeHabbo(membros, prioridadeDireto = false, setsHabbo = null) {
     const listaOffline = [];
     const BATCH_SIZE = 15;
 
@@ -1225,12 +1251,17 @@ async function verificarAtividadeHabbo(membros, prioridadeDireto = false) {
             if (dados.lastAccessTime) {
                 const diasDiferenca = Math.floor((new Date() - new Date(dados.lastAccessTime)) / (1000 * 60 * 60 * 24));
                 if (diasDiferenca >= 5) {
-                    const verificacaoGrupo = await verificarGrupo(m.nick, dados.uniqueId, prioridadeDireto);
+                    const nickLower = m.nick.toLowerCase();
+                    const noProfessores = setsHabbo ? setsHabbo.prof.has(nickLower) : false;
+                    const noGraduadores = setsHabbo ? setsHabbo.grad.has(nickLower) : false;
+                    const noGrupo = noProfessores || noGraduadores;
+
                     // Só retorna se estiver em algum grupo
-                    if (verificacaoGrupo.noGrupo) {
+                    if (noGrupo) {
                         return {
                             nick: m.nick, cargo: m.cargo, dias: diasDiferenca,
-                            estaNoForum: m.estaNoForum, subforunsDoMembro: m.subforunsDoMembro, ...verificacaoGrupo
+                            estaNoForum: m.estaNoForum, subforunsDoMembro: m.subforunsDoMembro, 
+                            noGrupo, noProfessores, noGraduadores
                         };
                     }
                 }
@@ -1624,8 +1655,17 @@ function criarCardGrupo(m, idx) {
                         <span class="text-[10px] px-2.5 py-1 rounded-full bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-400 font-bold uppercase tracking-wider">
                             <i class="fa-solid fa-triangle-exclamation mr-1.5"></i>${m.cargo && m.cargo !== 'Não consta na listagem' ? 'Cargo Irregular' : 'Não é professor'}
                         </span>
+                        ${m.isAdminNoGrupo ? `
+                        <span class="text-[10px] px-2.5 py-1 rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400 font-bold uppercase tracking-wider flex items-center gap-1.5 animate-pulse">
+                            <i class="fa-solid fa-star text-[10px]"></i> ADMIN DO GRUPO
+                        </span>` : ''}
                     </div>
                 </div>
+                ${m.isAdminNoGrupo ? `
+                <div class="mb-4 p-3 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 rounded-xl text-[11px] text-amber-700 dark:text-amber-400 flex items-start gap-2.5 shadow-sm">
+                    <i class="fa-solid fa-circle-exclamation mt-0.5 shrink-0"></i>
+                    <span><strong>Atenção:</strong> Este usuário é administrador do grupo no Habbo. Tenha cautela ao realizar a remoção manual ou ignore se considerar necessário.</span>
+                </div>` : ''}
                 <p class="text-sm text-slate-500 dark:text-slate-400 mb-5 flex items-center gap-2">
                     <i class="fa-solid fa-circle-info text-slate-400"></i>${m.cargo && m.cargo !== 'Não consta na listagem' ? 'Cargo atual: ' + m.cargo : m.status}
                 </p>
@@ -1666,6 +1706,21 @@ function criarCardMembro(m, idx, tipo) {
         }
         return `<span class="${styleClass} px-2.5 py-1 rounded text-[10px] uppercase font-bold flex items-center gap-1.5 shadow-sm"><i class="fa-solid ${icon}"></i>${sg}</span>`;
     }).join('');
+
+    let badgeAdmin = '';
+    let avisoAdmin = '';
+
+    if (m.isAdminNoGrupo) {
+        badgeAdmin = `
+            <span class="text-[10px] px-2.5 py-1 rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400 font-bold uppercase tracking-wider flex items-center gap-1.5 animate-pulse">
+                <i class="fa-solid fa-star text-[10px]"></i> ADMIN DO GRUPO
+            </span>`;
+        avisoAdmin = `
+            <div class="mb-4 p-3 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 rounded-xl text-[11px] text-amber-700 dark:text-amber-400 flex items-start gap-2.5 shadow-sm">
+                <i class="fa-solid fa-circle-exclamation mt-0.5 shrink-0"></i>
+                <span><strong>Aviso de Segurança:</strong> Este usuário possui cargo de Administrador no grupo do Habbo. Recomenda-se cautela extra.</span>
+            </div>`;
+    }
 
     let badgeStatus = '';
     let tipoAcao = 'rebaixamento';
@@ -1860,10 +1915,15 @@ function criarCardMembro(m, idx, tipo) {
 
             <div class="flex-grow text-center md:text-left w-full">
                 <div class="flex flex-col md:flex-row justify-between items-center gap-4 mb-4">
-                    <h4 class="font-bold text-2xl text-slate-800 dark:text-white tracking-tight">${m.nick}</h4>
+                    <div class="flex flex-wrap items-center gap-3">
+                        <h4 class="font-bold text-2xl text-slate-800 dark:text-white tracking-tight">${m.nick}</h4>
+                        ${badgeAdmin}
+                    </div>
                     ${badgeStatus}
                 </div>
                 
+                ${avisoAdmin}
+
                 ${contentHtml}
             </div>
         </div>
@@ -2706,4 +2766,3 @@ function confirmarPostagemMedalha(btnOriginal, codigo, chkId) {
             }, 2000);
         });
 }
-
