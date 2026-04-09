@@ -867,7 +867,7 @@ async function iniciarVerificacao(modo) {
 
                     if (dataReferencia) {
                         const diferencaTempo = Math.abs(new Date() - dataReferencia);
-                        const diasDiferenca = Math.ceil(diferencaTempo / (1000 * 60 * 60 * 24));
+                        const diasDiferenca = Math.floor(diferencaTempo / (1000 * 60 * 60 * 24));
 
                         if (diasDiferenca > 7) {
                             graduacaoFinal.push({
