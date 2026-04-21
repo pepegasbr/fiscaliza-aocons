@@ -8,10 +8,11 @@ const INTERVALO_DADOS = 'Gerador!B4:J193';
 
 // Lista de Proxies CORS para redundância (Fallbacks)
 const LISTA_PROXIES = [
-    'https://api.allorigins.win/raw?url=',       // Principal
-    'https://thingproxy.freeboard.io/fetch/',    // Fallback 1
-    'https://api.codetabs.com/v1/proxy?quest=',  // Fallback 2
-    'https://corsproxy.io/?'                     // Fallback 3
+    'https://proxydopegas.lipe81444.workers.dev/?url=',  // Worker Privado (Principal)
+    'https://api.allorigins.win/raw?url=',           // Fallback 1
+    'https://thingproxy.freeboard.io/fetch/',        // Fallback 2
+    'https://api.codetabs.com/v1/proxy?quest=',      // Fallback 3
+    'https://corsproxy.io/?'                         // Fallback 4
 ];
 
 const URL_API_HABBO = 'https://www.habbo.com.br/api/public/users';
@@ -1256,14 +1257,13 @@ async function verificarAtividadeHabbo(membros, prioridadeDireto = false, setsHa
                     const noGraduadores = setsHabbo ? setsHabbo.grad.has(nickLower) : false;
                     const noGrupo = noProfessores || noGraduadores;
 
-                    // Só retorna se estiver em algum grupo
-                    if (noGrupo) {
-                        return {
-                            nick: m.nick, cargo: m.cargo, dias: diasDiferenca,
-                            estaNoForum: m.estaNoForum, subforunsDoMembro: m.subforunsDoMembro, 
-                            noGrupo, noProfessores, noGraduadores
-                        };
-                    }
+                    // Retorna TODOS os membros com 5+ dias off (independente de grupo)
+                    // A info de grupo é adicionada como metadata opcional
+                    return {
+                        nick: m.nick, cargo: m.cargo, dias: diasDiferenca,
+                        estaNoForum: m.estaNoForum, subforunsDoMembro: m.subforunsDoMembro, 
+                        noGrupo, noProfessores, noGraduadores
+                    };
                 }
             }
         } catch (e) {
