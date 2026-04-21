@@ -54,6 +54,7 @@ async function fetchWithProxy(url, options = {}, prioridadeDireto = false) {
             const targetUrl = proxy + encodeURIComponent(url);
             const response = await fetch(targetUrl, options);
             if (response.ok) return response;
+            if (response.status >= 400 && response.status < 500) return response;
             console.warn(`[Proxy] Falha no proxy ${proxy}: ${response.status}`);
         } catch (e) {
             console.warn(`[Proxy] Erro ao conectar com ${proxy}`);
