@@ -143,7 +143,7 @@ function salvarEstadoAtual() {
         verificador: localStorage.getItem('verificadorNick'),
         resumo: gerarResumoLog(),
         estado: estadoAtualGlobal,
-        nicksSystem: document.getElementById('lista-gratificacoes').value // Envia para atualizar a aba System também
+        nicksSystem: extrairNicksDaListagemMembros(document.getElementById('lista-gratificacoes').value).join('\n') // Envia para atualizar a aba System também
     };
 
     enviarLogBackground(payload);
@@ -614,6 +614,23 @@ document.documentElement.classList.add('dark');
 
 
 
+function extrairNicksDaListagemMembros(texto) {
+    if (!texto) return [];
+    const lines = texto.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+    const nicks = [];
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const ehTag = (line.startsWith('[') && line.endsWith(']')) || line === '---';
+        if (ehTag && i > 0) {
+            const nick = lines[i - 1].replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+            if (nick) {
+                nicks.push(nick);
+            }
+        }
+    }
+    return Array.from(new Set(nicks));
+}
+
 function converterDataPlanilha(dataStr) {
     if (!dataStr) return null;
     const meses = { 'jan': 0, 'fev': 1, 'mar': 2, 'abr': 3, 'mai': 4, 'jun': 5, 'jul': 6, 'ago': 7, 'set': 8, 'out': 9, 'nov': 10, 'dez': 11 };
@@ -712,7 +729,7 @@ window.fecharModalAvisoInicial = function () {
 window.addEventListener('load', () => {
     // Se quiser persistir na sessão, descomente abaixo:
     // if (!sessionStorage.getItem('avisoVisto')) {
-    abrirModalAvisoInicial();
+    // abrirModalAvisoInicial();
     // }
 });
 
@@ -814,9 +831,7 @@ async function iniciarVerificacao(modo) {
     alternarCarregamento(true);
 
     // Converte para lowercase e remove caracteres invisíveis para comparação robusta
-    const nicksAtivos = new Set(textoSystem.split('\n')
-        .map(l => l.split('[')[0].trim().split('\t')[0].trim().toLowerCase().replace(/[\u200B-\u200D\uFEFF]/g, ''))
-        .filter(n => n.length > 0));
+    const nicksAtivos = new Set(extrairNicksDaListagemMembros(textoSystem).map(n => n.toLowerCase()));
 
     try {
 
@@ -1133,7 +1148,7 @@ async function verificarMembrosGruposHabbo(mapaMembrosOficiais, nicksNoSystem, p
                 const dadosOficiais = mapaMembrosOficiais.get(nickLower);
                 const isOfficial = !!dadosOficiais;
                 const isNoSystem = nicksNoSystem && nicksNoSystem.has(nickLower);
-                
+
                 // MUDANÇA (Ajuste Final): Para esta aba de intrusos, o único critério é estar na PLANILHA
                 const isRegular = isOfficial;
 
@@ -1262,7 +1277,7 @@ async function verificarAtividadeHabbo(membros, prioridadeDireto = false, setsHa
                     // A info de grupo é adicionada como metadata opcional
                     return {
                         nick: m.nick, cargo: m.cargo, dias: diasDiferenca,
-                        estaNoForum: m.estaNoForum, subforunsDoMembro: m.subforunsDoMembro, 
+                        estaNoForum: m.estaNoForum, subforunsDoMembro: m.subforunsDoMembro,
                         noGrupo, noProfessores, noGraduadores
                     };
                 }
