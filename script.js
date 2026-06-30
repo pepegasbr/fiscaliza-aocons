@@ -620,10 +620,15 @@ function extrairNicksDaListagemMembros(texto) {
     const nicks = [];
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
-        const ehTag = (line.startsWith('[') && line.endsWith(']')) || line === '---';
-        if (ehTag && i > 0) {
-            const nick = lines[i - 1].replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
-            if (nick) {
+        // Formato Gratificações: cada linha da tabela é separada por tabs
+        // Colunas: #  Policial  Patente/Cargo  Medalhas Efetivas  Medalhas Temporárias  Salário
+        // Ex: "1	Aloscon	Chanceler	1.064	0	53c"
+        const cols = line.split('\t');
+        if (cols.length >= 3) {
+            const numeracao = cols[0].trim();
+            const nick = cols[1] ? cols[1].replace(/[\u200B-\u200D\uFEFF]/g, '').trim() : '';
+            // Verifica se a primeira coluna é um número (numeração da tabela)
+            if (/^-?\d+$/.test(numeracao) && nick && nick.length >= 1) {
                 nicks.push(nick);
             }
         }
