@@ -619,7 +619,24 @@ function extrairNicksDaListagemMembros(texto) {
     const lines = texto.split('\n').map(l => l.trim()).filter(l => l.length > 0);
     const nicks = [];
     for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
+        const line = lines[i].replace(/[\u200B-\u200D\uFEFF]/g, '');
+
+        // Formato atual do botao "Copiar" da listagem:
+        // 1. Aloscon | Chanceler | Medalhas Efetivas: 15 | Medalhas Temporarias: 0 | Salario: 12c
+        const colsPipe = line.split('|').map(col => col.trim());
+        if (colsPipe.length >= 5) {
+            const primeiraColuna = colsPipe[0].match(/^\d+\.\s*(.+)$/);
+            const possuiCamposEsperados =
+                /^Medalhas Efetivas\s*:/i.test(colsPipe[2]) &&
+                /^Medalhas Tempor[aá]rias\s*:/i.test(colsPipe[3]) &&
+                /^Sal[aá]rio\s*:/i.test(colsPipe[4]);
+
+            if (primeiraColuna && possuiCamposEsperados) {
+                const nick = primeiraColuna[1].trim();
+                if (nick) nicks.push(nick);
+                continue;
+            }
+        }
         // Formato Gratificações: cada linha da tabela é separada por tabs
         // Colunas: #  Policial  Patente/Cargo  Medalhas Efetivas  Medalhas Temporárias  Salário
         // Ex: "1	Aloscon	Chanceler	1.064	0	53c"
@@ -687,6 +704,9 @@ botaoVerificar.addEventListener('click', () => {
     const textoForumGraduadores = document.getElementById('lista-forum-graduadores').value;
 
     if (!textoSystem.trim()) return showToast('Por favor, cole a lista do System primeiro.', 'error');
+    if (extrairNicksDaListagemMembros(textoSystem).length === 0) {
+        return showToast('Nenhum policial foi reconhecido na lista do System. Copie novamente pelo botao da listagem.', 'error');
+    }
     if (!textoForumProfessores.trim() || !textoForumCoordenadores.trim() || !textoForumGraduadores.trim()) {
         return showToast('Por favor, cole as listas dos 3 subfóruns (Professores, Coordenadores e Graduadores).', 'error');
     }
@@ -2739,21 +2759,6 @@ function confirmarPostagemMedalha(btnOriginal, codigo, chkId) {
     btnOriginal.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
     btnOriginal.disabled = true;
 
-    // Extrai dados para o Macro a partir do código BBCode ou dos parâmetros
-    // O ideal é usar os parâmetros passados para postarMedalha, mas aqui temos chkId que pode ser múltiplo
-    // No entanto, postarMedalha chama esta função. Vamos precisar dos dados originais.
-    // Como confirmarPostagemMedalha é chamado apenas pelo callback do modal, 
-    // precisamos garantir que temos acesso aos dados.
-    // A função postarMedalha tem: nick, tipo, motivo, cargo.
-    // Vamos alterar a assinatura de confirmarPostagemMedalha para receber esses dados ou extraí-los.
-    // Mas espere! O btnOriginal.onclick foi definido em postarMedalha com os parâmetros.
-    // O problema é que confirmarPostagemMedalha é chamada dentro de um callback anônimo em postarMedalha:
-    // () => confirmarPostagemMedalha(btn, codigo, chkId)
-    // Então, precisamos mudar a assinatura E a chamada.
-
-    // VAMOS REFAZER A ESTRUTURA PARA PASSAR OS DADOS
-    // (Ver abaixo na chamada em postarMedalha)
-
     $.post("/post", { t: ID_TOPICO_MEDALHA, message: codigo, mode: "reply", post: 1 })
         .done(() => {
             btnOriginal.innerHTML = '<i class="fa-solid fa-check"></i>';
@@ -2769,9 +2774,6 @@ function confirmarPostagemMedalha(btnOriginal, codigo, chkId) {
             ativarCooldownGlobal();
             exibirModalConfirmacao(ID_TOPICO_MEDALHA);
 
-            // INTEGRAÇÃO MACRO
-            // Recupera dados do botão (dataset) ou argumentos.
-            // A melhor forma é passar os dados como argumento extra.
             if (btnOriginal.dataset.macroData) {
                 const data = JSON.parse(btnOriginal.dataset.macroData);
                 enviarDadosMacro(data.nick, data.cargo, data.motivo, data.qtd);
