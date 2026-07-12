@@ -2,17 +2,11 @@ const CHAVE_API = 'AIzaSyBQhWdy4iyFCk9Lh89x8weSIyl0knXgA34';
 const ID_PLANILHA = '1KQXx7TFtbNzMYHzOM5LMT7Fh61hiGOKZHux4K3Q6YpM';
 const INTERVALO_DADOS = 'Gerador!B4:J193';
 
-// ═══════════════════════════════════════════════════════════════════════════
-// CONFIGURAÇÕES DE PROXY E API
-// ═══════════════════════════════════════════════════════════════════════════
-
-// Lista de Proxies CORS para redundância (Fallbacks)
 const LISTA_PROXIES = [
-    'https://proxydopegas.lipe81444.workers.dev/?url=',  // Worker Privado (Principal)
-    'https://api.allorigins.win/raw?url=',           // Fallback 1
-    'https://thingproxy.freeboard.io/fetch/',        // Fallback 2
-    'https://api.codetabs.com/v1/proxy?quest=',      // Fallback 3
-    'https://corsproxy.io/?'                         // Fallback 4
+    'https://proxydopegas.lipe81444.workers.dev/?url=',
+    'https://api.allorigins.win/raw?url=',
+    'https://thingproxy.freeboard.io/fetch/',
+    'https://api.codetabs.com/v1/proxy?quest='
 ];
 
 const URL_API_HABBO = 'https://www.habbo.com.br/api/public/users';
@@ -27,34 +21,46 @@ const ID_GRUPO_GSS = 'g-hhbr-4d2f8fa6bad619fb52f9f9b97de71a87';
 
 const ID_TOPICO_FORUM = 32243;
 const ID_TOPICO_MEDALHA = 36745;
+const REQUEST_TIMEOUT_MS = 8000;
 
-/**
- * Realiza um fetch utilizando uma lista de proxies como fallback
- * @param {string} url - URL de destino
- * @param {Object} options - Opções do fetch
- * @param {boolean} prioridadeDireto - Se true, tenta o fetch direto ANTES dos proxies
- * @returns {Promise<Response>}
- */
+async function fetchComTimeout(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+        return await fetch(url, { ...options, signal: controller.signal });
+    } catch (erro) {
+        if (erro.name === 'AbortError') {
+            let destino = String(url);
+            try {
+                destino = new URL(url, window.location.href).hostname;
+            } catch (e) { }
+            throw new Error(`Tempo limite excedido ao acessar ${destino}`);
+        }
+        throw erro;
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
+
 async function fetchWithProxy(url, options = {}, prioridadeDireto = false) {
     let ultimoErro = null;
 
-    // Se a prioridade for direto (Modo Rápido), tenta antes de tudo
-    if (prioridadeDireto) {
-        try {
-            const directResponse = await fetch(url, options);
-            if (directResponse.ok) return directResponse;
-        } catch (e) {
-            console.log('[Proxy] Fetch direto falhou, tentando proxies...');
-        }
+    try {
+        const directResponse = await fetchComTimeout(url, options);
+        if (directResponse.ok) return directResponse;
+        if (directResponse.status === 404) return directResponse;
+    } catch (e) {
+        console.log('[Proxy] Fetch direto inicial falhou, usando proxies...');
+        ultimoErro = e;
     }
 
-    // Tenta cada proxy da lista
     for (const proxy of LISTA_PROXIES) {
         try {
             const targetUrl = proxy + encodeURIComponent(url);
-            const response = await fetch(targetUrl, options);
+            const response = await fetchComTimeout(targetUrl, options);
             if (response.ok) return response;
-            if (response.status >= 400 && response.status < 500) return response;
+            if (response.status === 404) return response;
             console.warn(`[Proxy] Falha no proxy ${proxy}: ${response.status}`);
         } catch (e) {
             console.warn(`[Proxy] Erro ao conectar com ${proxy}`);
@@ -62,26 +68,11 @@ async function fetchWithProxy(url, options = {}, prioridadeDireto = false) {
         }
     }
 
-    // Fallback Final (se não tentou ainda): Tenta fetch direto (sem proxy)
-    if (!prioridadeDireto) {
-        try {
-            console.log('[Proxy] Tentando fetch direto como último recurso...');
-            const directResponse = await fetch(url, options);
-            if (directResponse.ok) return directResponse;
-        } catch (e) {
-            ultimoErro = e;
-        }
-    }
-
     throw ultimoErro || new Error('Todos os proxies falharam');
 }
 
-// Variável para armazenar o modo de verificação escolhido pelo usuário
 let m_modoVerificacao = 'direto';
 
-/**
- * Atualiza visualmente o estilo do modo escolhido no modal
- */
 window.atualizarEstiloModo = function () {
     const radios = document.getElementsByName('modo-verificacao');
     radios.forEach(r => {
@@ -103,50 +94,41 @@ window.atualizarEstiloModo = function () {
     });
 };
 
-// ═══════════════════════════════════════════════════════════════════════════
-// INTEGRAÇÃO COM GOOGLE SHEETS - SISTEMA DE LOGS JSON & VISUALIZAÇÃO
-// ═══════════════════════════════════════════════════════════════════════════
-
-// URL do Web App (O usuário deve atualizar após o novo deploy)
 const SHEETS_WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbzzEUQN5twPDbTAbUQA27ysVi-PAwbgoQe1w8BQwY2f8_jzlhI2NPvYpETkYgfe5qdl/exec';
 
-// Estado Global para Logs
 let estadoAtualGlobal = {
     verificador: '',
     timestamp: null,
-    resultados: {}, // Armazena os dados processados (listas de membros)
-    checkboxes: {}  // Armazena o estado dos checkboxes { 'chk-id': true/false }
+    resultados: {},
+    checkboxes: {}
 };
 
 let todosOsLogsCache = [];
+let timeoutSalvamentoEstado = null;
 
-// ═══════════════════════════════════════════════════════════════════════════
-// 1. FUNÇÕES DE SALVAMENTO (LOGGING)
-// ═══════════════════════════════════════════════════════════════════════════
-
-/**
- * Coleta o estado atual da tela (checkboxes) e salva no servidor
- */
 function salvarEstadoAtual() {
-    if (!estadoAtualGlobal.timestamp) return; // Não salva se não houve verificação ainda
+    if (!estadoAtualGlobal.timestamp) return;
 
-    // Coleta estado de todos os checkboxes relevantes
     const checkboxes = document.querySelectorAll('input[type="checkbox"][id^="chk-"]');
     checkboxes.forEach(chk => {
         estadoAtualGlobal.checkboxes[chk.id] = chk.checked;
     });
 
-    // Envia o log completo
     const payload = {
         action: 'SAVE_LOG',
-        id: estadoAtualGlobal.id, // ID único da sessão atual
+        id: estadoAtualGlobal.id,
         verificador: localStorage.getItem('verificadorNick'),
         resumo: gerarResumoLog(),
         estado: estadoAtualGlobal,
-        nicksSystem: extrairNicksDaListagemMembros(document.getElementById('lista-gratificacoes').value).join('\n') // Envia para atualizar a aba System também
+        nicksSystem: extrairNicksDaListagemMembros(document.getElementById('lista-gratificacoes').value).join('\n')
     };
 
     enviarLogBackground(payload);
+}
+
+function agendarSalvamentoEstado() {
+    clearTimeout(timeoutSalvamentoEstado);
+    timeoutSalvamentoEstado = setTimeout(salvarEstadoAtual, 350);
 }
 
 function gerarResumoLog() {
@@ -172,62 +154,54 @@ function enviarLogBackground(dados) {
         .catch(e => console.warn('[Log] Falha ao salvar:', e));
 }
 
-// Substitui as funções antigas de registro
-function registrarVerificacaoNaPlanilha(inativos, graduacao, offline, removerForum, retirarDosGrupos, textoSystem) {
-    // Inicializa o estado global desta sessão
+function registrarVerificacaoNaPlanilha(inativos, graduacao, offline, removerForum, retirarDosGrupos, textoSystem, erros = []) {
+
     estadoAtualGlobal = {
-        id: crypto.randomUUID(), // Cria um ID novo para essa sessão de verificação
+        id: crypto.randomUUID(),
         verificador: localStorage.getItem('verificadorNick'),
         timestamp: new Date().toISOString(),
         resultados: {
-            inativos: inativos.map(m => ({ ...m, _idx: undefined })), // Limpa _idx se existir
+            inativos: inativos.map(m => ({ ...m, _idx: undefined })),
             graduacao: graduacao.map(m => ({ ...m, _idx: undefined })),
             offline: offline.map(m => ({ ...m, _idx: undefined })),
             removerForum: removerForum,
-            retirarDosGrupos: retirarDosGrupos
+            retirarDosGrupos: retirarDosGrupos,
+            erros: erros
         },
         checkboxes: {}
     };
 
-    // Salva o estado inicial
     salvarEstadoAtual();
 }
 
-// Hook para salvar sempre que um checkbox mudar (ação individual)
 document.addEventListener('change', (e) => {
     if (e.target.matches('input[type="checkbox"][id^="chk-"]')) {
-        salvarEstadoAtual();
+        agendarSalvamentoEstado();
     }
 });
 
-// Mantida apenas para compatibilidade se algo chamar, mas o log real é via salvarEstadoAtual
 function registrarAcaoNaPlanilha(categoria, nickMembro, cargoMembro, tipoAcao, marcado, observacoes = '') {
-    salvarEstadoAtual();
+    agendarSalvamentoEstado();
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// 2. MODO ADMIN & VISUALIZAÇÃO DE LOGS
-// ═══════════════════════════════════════════════════════════════════════════
-
-// Detectar 5 cliques no logo para abrir Admin
 let clicksLogo = 0;
 let timeoutLogo;
 
 function setupAdminTrigger() {
     const logo = document.getElementById('logo-professores');
     if (logo) {
-        // Remove listener anterior para evitar duplicação (caso re-execute)
+
         const newLogo = logo.cloneNode(true);
         logo.parentNode.replaceChild(newLogo, logo);
 
         newLogo.addEventListener('click', (e) => {
-            // Efeito visual de clique (opcional)
+
             newLogo.style.transform = 'scale(0.9)';
             setTimeout(() => newLogo.style.transform = '', 100);
 
             clicksLogo++;
             if (clicksLogo === 1) {
-                // Reseta contagem após 2 segundos sem clicar
+
                 timeoutLogo = setTimeout(() => {
                     clicksLogo = 0;
                 }, 2000);
@@ -252,7 +226,7 @@ if (document.readyState === 'loading') {
 }
 
 async function abrirModalLogs() {
-    // Cria o modal se não existir
+
     if (!document.getElementById('modal-logs')) {
         criarModalLogsHTML();
     }
@@ -264,7 +238,7 @@ async function abrirModalLogs() {
     lista.innerHTML = '<div class="text-center p-4 text-slate-500"><i class="fa-solid fa-spinner fa-spin"></i> Carregando logs...</div>';
 
     try {
-        const response = await fetch(`${SHEETS_WEB_APP_URL}?action=GET_LOGS`);
+        const response = await fetchComTimeout(`${SHEETS_WEB_APP_URL}?action=GET_LOGS`);
         const data = await response.json();
 
         renderizarListaLogs(data.logs);
@@ -296,14 +270,14 @@ function criarModalLogsHTML() {
                             <i class="fa-solid fa-xmark text-xl"></i>
                         </button>
                     </div>
-                    
-                    <!-- Barra de Pesquisa -->
+
+
                     <div class="p-6 pb-2 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50">
                         <div class="relative">
                             <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                                 <i class="fa-solid fa-magnifying-glass text-slate-400"></i>
                             </div>
-                            <input type="text" id="busca-logs" 
+                            <input type="text" id="busca-logs"
                                 class="block w-full pl-10 pr-3 py-3 border border-slate-200 dark:border-slate-700 rounded-xl leading-5 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm transition-all shadow-sm"
                                 placeholder="Buscar por nick, data ou resumo..."
                                 onkeyup="filtrarLogs(this.value)">
@@ -312,7 +286,7 @@ function criarModalLogsHTML() {
 
                     <div class="p-6 bg-slate-50 dark:bg-slate-900/20 min-h-[400px]">
                         <div id="lista-logs-conteudo" class="grid grid-cols-1 gap-3 max-h-[50vh] overflow-y-auto custom-scrollbar pr-2">
-                            <!-- Logs Renderizados Aqui -->
+
                         </div>
                     </div>
                 </div>
@@ -326,11 +300,10 @@ function fecharModalLogs() {
     document.getElementById('modal-logs').classList.add('hidden');
 }
 
-// Armazena logs globalmente para filtragem
 let logsCacheGlobal = [];
 
 function renderizarListaLogs(logs) {
-    logsCacheGlobal = logs || []; // Salva para uso no filtro
+    logsCacheGlobal = logs || [];
     atualizarListaVisual(logsCacheGlobal);
 }
 
@@ -378,7 +351,6 @@ function atualizarListaVisual(logs) {
         const dataFormatada = formatarDataLegivel(log.data);
         const inicial = log.verificador ? log.verificador.charAt(0).toUpperCase() : '?';
 
-        // Ícones baseados no resumo
         let iconResumo = '<i class="fa-solid fa-list-check"></i>';
         let corResumo = 'text-slate-500';
         let bgResumo = 'bg-slate-100 dark:bg-slate-800';
@@ -394,15 +366,15 @@ function atualizarListaVisual(logs) {
         }
 
         html += `
-        <div onclick="carregarLogDetalhado('${log.id}')" 
+        <div onclick="carregarLogDetalhado('${log.id}')"
              class="group cursor-pointer bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700/50 rounded-xl p-4 hover:border-indigo-500 dark:hover:border-indigo-500 transition-all shadow-sm hover:shadow-md flex justify-between items-center relative overflow-hidden">
-            
+
             <div class="absolute left-0 top-0 bottom-0 w-1 bg-transparent group-hover:bg-indigo-500 transition-colors"></div>
 
             <div class="flex items-center gap-4">
                 <div class="w-10 h-10 rounded-xl bg-indigo-50 dark:bg-slate-700/50 flex items-center justify-center overflow-hidden border border-indigo-100 dark:border-slate-600/50 shadow-sm">
-                   <img src="https://www.habbo.com.br/habbo-imaging/avatarimage?img_format=png&user=${log.verificador}&direction=2&head_direction=3&size=M&headonly=1" 
-                        alt="${log.verificador}" 
+                   <img src="https://www.habbo.com.br/habbo-imaging/avatarimage?img_format=png&user=${log.verificador}&direction=2&head_direction=3&size=M&headonly=1"
+                        alt="${log.verificador}"
                         class="w-full h-full object-contain scale-150 translate-y-1"
                         onerror="this.style.display='none'; this.parentElement.innerHTML='<span class=\'text-xs font-bold text-indigo-500\'>?</span>'">
                 </div>
@@ -430,17 +402,16 @@ function atualizarListaVisual(logs) {
 async function carregarLogDetalhado(id) {
     const btn = document.activeElement;
 
-    // Mostra overlay de carregamento
     const overlay = document.getElementById('loading-overlay');
     if (overlay) overlay.classList.remove('hidden');
     if (overlay) overlay.classList.add('flex');
 
     try {
-        const response = await fetch(`${SHEETS_WEB_APP_URL}?action=GET_LOG_DETAILS&id=${id}`);
+        const response = await fetchComTimeout(`${SHEETS_WEB_APP_URL}?action=GET_LOG_DETAILS&id=${id}`);
         const data = await response.json();
 
         if (data.success && data.estado) {
-            // Pequeno delay artificial para sensação de carregamento fluida
+
             await new Promise(r => setTimeout(r, 800));
 
             restaurarEstado(data.estado);
@@ -464,7 +435,6 @@ async function carregarLogDetalhado(id) {
     }
 }
 
-// Sistema de Toasts
 function showToast(mensagem, tipo = 'info') {
     const container = document.getElementById('toast-container');
     if (!container) return;
@@ -491,12 +461,10 @@ function showToast(mensagem, tipo = 'info') {
     container.insertAdjacentHTML('beforeend', html);
     const toastElement = document.getElementById(id);
 
-    // Animação de entrada
     requestAnimationFrame(() => {
         toastElement.classList.remove('translate-x-full', 'opacity-0');
     });
 
-    // Remove após 4 segundos
     setTimeout(() => {
         toastElement.classList.add('translate-x-full', 'opacity-0');
         setTimeout(() => toastElement.remove(), 500);
@@ -506,28 +474,26 @@ function showToast(mensagem, tipo = 'info') {
 function restaurarEstado(estado) {
     estadoAtualGlobal = estado;
 
-    // Restaura listas e renderiza
     exibirResultados(
         estado.resultados.inativos || [],
         estado.resultados.offline || [],
         estado.resultados.graduacao || [],
         estado.resultados.removerForum || [],
-        estado.resultados.retirarDosGrupos || { retirar: [], subgrupos: [], sets: {} }
+        estado.resultados.retirarDosGrupos || { retirar: [], subgrupos: [], sets: {} },
+        estado.resultados.erros || []
     );
 
-    // Restaura Checkboxes
     setTimeout(() => {
         if (estado.checkboxes) {
             Object.entries(estado.checkboxes).forEach(([id, checked]) => {
                 const el = document.getElementById(id);
                 if (el) {
                     el.checked = checked;
-                    // Se estiver marcado, talvez queira forçar estilo visual
-                    // mas o CSS do navegador já cuida disso
+
                 }
             });
         }
-    }, 500); // Pequeno delay para garantir que o DOM foi criado por exibirResultados
+    }, 500);
 }
 
 const TEMPLATE_MP_EXPULSAO = `[font=Poppins]<div style="border:1.5rem solid #821F88;border-radius:8px;font-family:Poppins;">[/font][table][tr][td][center][img]https://i.imgur.com/hU7bn8R.gif[/img][/center]
@@ -545,7 +511,6 @@ Informa-se que você foi[b] expulso(a) de nossa companhia e penalizado com cem (
 Leia as documentações que regem a companhia [url=https://sites.google.com/view/nexusprof/documenta%C3%A7%C3%B5es?authuser=3]clicando aqui[/url]. Caso queira recorrer da punição recebida, procure a Liderança apresentando argumentos factuais e plausíveis. Sinta-se à vontade para refazer o teste de admissão para a companhia ou ingressar em uma outra.[/justify]</div>[/td][/tr][/table]</div>
 [font=Poppins][center]Atentamente,
 [img]https://i.imgur.com/1kZvQHs.png[/img][/center][/font]`;
-
 
 const TEMPLATE_MP_REBAIXAMENTO = `[font=Poppins]<div style="border:1.5rem solid #821F88;border-radius:8px;font-family:Poppins;">[/font][table][tr][td][center][img]https://i.imgur.com/hU7bn8R.gif[/img][/center]
 
@@ -565,7 +530,6 @@ Leia as documentações que regem a companhia [url=https://sites.google.com/view
 
 const HIERARQUIA = ['Líder', 'Vice-líder', 'Conselheiro(a) da Contabilidade', 'Conselheiro(a) das Finanças', 'Conselheiro(a) da Administração', 'Conselheiro(a) da Documentação', 'Conselheiro(a) da Segurança', 'Conselheiro(a) da Atualização²', 'Conselheiro(a) da Atualização¹', 'Estagiário(a)', 'Graduador(a)', 'Coordenador(a)', 'Professor(a)'];
 
-
 const botaoVerificar = document.getElementById('botaoVerificar');
 const listaGratificacoes = document.getElementById('lista-gratificacoes');
 const listaForum = document.getElementById('lista-forum');
@@ -573,16 +537,11 @@ const carregador = document.getElementById('carregador');
 const containerResultados = document.getElementById('container-resultados');
 const statusProcesso = document.getElementById('status-processo');
 
-
-
-
 const sobreposicaoModal = document.getElementById('sobreposicao-modal');
 const fundoModal = document.getElementById('fundo-modal');
 const painelModal = document.getElementById('painel-modal');
 const conteudoModal = document.getElementById('conteudo-modal');
 const tituloModal = document.getElementById('titulo-modal');
-
-
 
 const modalMP = document.getElementById('modal-mp');
 const fundoModalMP = document.getElementById('fundo-modal-mp');
@@ -603,16 +562,7 @@ let membrosRemoverForum = [];
 let topicoRedirecionamento = '';
 let checkboxMPAtual = '';
 
-
-
-
-
-
-
-// Tema padrão Dark sem cache
 document.documentElement.classList.add('dark');
-
-
 
 function extrairNicksDaListagemMembros(texto) {
     if (!texto) return [];
@@ -621,8 +571,6 @@ function extrairNicksDaListagemMembros(texto) {
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i].replace(/[\u200B-\u200D\uFEFF]/g, '');
 
-        // Formato atual do botao "Copiar" da listagem:
-        // 1. Aloscon | Chanceler | Medalhas Efetivas: 15 | Medalhas Temporarias: 0 | Salario: 12c
         const colsPipe = line.split('|').map(col => col.trim());
         if (colsPipe.length >= 5) {
             const primeiraColuna = colsPipe[0].match(/^\d+\.\s*(.+)$/);
@@ -637,14 +585,12 @@ function extrairNicksDaListagemMembros(texto) {
                 continue;
             }
         }
-        // Formato Gratificações: cada linha da tabela é separada por tabs
-        // Colunas: #  Policial  Patente/Cargo  Medalhas Efetivas  Medalhas Temporárias  Salário
-        // Ex: "1	Aloscon	Chanceler	1.064	0	53c"
+
         const cols = line.split('\t');
         if (cols.length >= 3) {
             const numeracao = cols[0].trim();
             const nick = cols[1] ? cols[1].replace(/[\u200B-\u200D\uFEFF]/g, '').trim() : '';
-            // Verifica se a primeira coluna é um número (numeração da tabela)
+
             if (/^-?\d+$/.test(numeracao) && nick && nick.length >= 1) {
                 nicks.push(nick);
             }
@@ -653,6 +599,75 @@ function extrairNicksDaListagemMembros(texto) {
     return Array.from(new Set(nicks));
 }
 
+function normalizarNick(nick) {
+    return String(nick || '')
+        .replace(/[\u200B-\u200D\uFEFF]/g, '')
+        .normalize('NFC')
+        .trim()
+        .toLowerCase();
+}
+
+function extrairNicksDoSubforum(texto) {
+    if (!texto) return [];
+    const nicks = new Map();
+
+    texto.split(/\r?\n/).forEach(linha => {
+        if (!linha.includes('Enviar uma mensagem privada')) return;
+        const partes = linha.split('\t');
+        const nick = partes[1] ? partes[1].trim() : '';
+        const nickNormalizado = normalizarNick(nick);
+        if (nickNormalizado.length >= 2 && !nicks.has(nickNormalizado)) {
+            nicks.set(nickNormalizado, nick);
+        }
+    });
+
+    return Array.from(nicks.values());
+}
+
+const CONTAS_FORUM_IGNORADAS = new Set([
+    'admin', 'professores', 'graduadores', 'coordenadores dos professores',
+    'com. de desenv. cultural', 'dep. ap. intendência',
+    'serv. proteção prof', '[prof] liderança'
+].map(normalizarNick));
+
+function atualizarEstadoDasFontes() {
+    const fontes = [
+        { id: 'lista-gratificacoes', statusId: 'status-gratificacoes', extrair: extrairNicksDaListagemMembros, singular: 'policial', plural: 'policiais' },
+        { id: 'lista-forum-professores', statusId: 'status-forum-professores', extrair: extrairNicksDoSubforum, singular: 'membro', plural: 'membros' },
+        { id: 'lista-forum-coordenadores', statusId: 'status-forum-coordenadores', extrair: extrairNicksDoSubforum, singular: 'membro', plural: 'membros' },
+        { id: 'lista-forum-graduadores', statusId: 'status-forum-graduadores', extrair: extrairNicksDoSubforum, singular: 'membro', plural: 'membros' }
+    ];
+
+    let fontesValidas = 0;
+    fontes.forEach(fonte => {
+        const campo = document.getElementById(fonte.id);
+        const status = document.getElementById(fonte.statusId);
+        if (!campo || !status) return;
+
+        const quantidade = fonte.extrair(campo.value).length;
+        const preenchido = campo.value.trim().length > 0;
+        const valido = quantidade > 0;
+        if (valido) fontesValidas++;
+
+        campo.classList.toggle('is-valid', valido);
+        campo.classList.toggle('is-invalid', preenchido && !valido);
+        status.className = `source-status ${valido ? 'is-ready' : preenchido ? 'has-error' : ''}`;
+        status.innerHTML = valido
+            ? `<i class="fa-solid fa-circle-check"></i> ${quantidade} ${quantidade === 1 ? fonte.singular : fonte.plural} reconhecido${quantidade === 1 ? '' : 's'}`
+            : preenchido
+                ? '<i class="fa-solid fa-triangle-exclamation"></i> Formato não reconhecido'
+                : '<i class="fa-regular fa-circle"></i> Aguardando dados';
+    });
+
+    const progresso = document.getElementById('progresso-fontes');
+    if (progresso) progresso.textContent = `${fontesValidas}/4 fontes prontas`;
+}
+
+['lista-gratificacoes', 'lista-forum-professores', 'lista-forum-coordenadores', 'lista-forum-graduadores']
+    .forEach(id => document.getElementById(id)?.addEventListener('input', atualizarEstadoDasFontes));
+
+atualizarEstadoDasFontes();
+
 function converterDataPlanilha(dataStr) {
     if (!dataStr) return null;
     const meses = { 'jan': 0, 'fev': 1, 'mar': 2, 'abr': 3, 'mai': 4, 'jun': 5, 'jul': 6, 'ago': 7, 'set': 8, 'out': 9, 'nov': 10, 'dez': 11 };
@@ -660,7 +675,12 @@ function converterDataPlanilha(dataStr) {
         const strLimpa = dataStr.replace('.', '').toLowerCase().trim();
         const partes = strLimpa.split(' ');
         if (partes.length >= 3) {
-            return new Date(parseInt(partes[2]), meses[partes[1].substring(0, 3)], parseInt(partes[0]));
+            const mes = meses[partes[1].substring(0, 3)];
+            const dia = parseInt(partes[0], 10);
+            const ano = parseInt(partes[2], 10);
+            if (mes === undefined || !Number.isInteger(dia) || !Number.isInteger(ano)) return null;
+            const data = new Date(ano, mes, dia);
+            return Number.isNaN(data.getTime()) ? null : data;
         }
     } catch (e) { }
     return null;
@@ -711,13 +731,8 @@ botaoVerificar.addEventListener('click', () => {
         return showToast('Por favor, cole as listas dos 3 subfóruns (Professores, Coordenadores e Graduadores).', 'error');
     }
 
-    // Abre o modal para solicitar o nickname do verificador
     abrirModalVerificador();
 });
-
-// ═══════════════════════════════════════════════════════════════════════════
-// MODAL DE AVISO INICIAL (POPUP OBRIGATÓRIO)
-// ═══════════════════════════════════════════════════════════════════════════
 
 function abrirModalAvisoInicial() {
     const modal = document.getElementById('modal-aviso-inicial');
@@ -725,7 +740,7 @@ function abrirModalAvisoInicial() {
     const painel = document.getElementById('painel-aviso-inicial');
 
     modal.classList.remove('hidden');
-    // Pequeno delay para permitir a transição CSS
+
     setTimeout(() => {
         fundo.classList.remove('opacity-0');
         painel.classList.remove('scale-95', 'opacity-0');
@@ -746,21 +761,11 @@ window.fecharModalAvisoInicial = function () {
         modal.classList.add('hidden');
     }, 300);
 
-    // Opcional: Salvar em sessionStorage se quiser mostrar apenas uma vez por sessão
-    // sessionStorage.setItem('avisoVisto', 'true');
 };
 
-// Exibir modal ao carregar a página
 window.addEventListener('load', () => {
-    // Se quiser persistir na sessão, descomente abaixo:
-    // if (!sessionStorage.getItem('avisoVisto')) {
-    // abrirModalAvisoInicial();
-    // }
-});
 
-// ═══════════════════════════════════════════════════════════════════════════
-// MODAL DO VERIFICADOR
-// ═══════════════════════════════════════════════════════════════════════════
+});
 
 function abrirModalVerificador() {
     const modal = document.getElementById('modal-verificador');
@@ -768,7 +773,6 @@ function abrirModalVerificador() {
     const painel = document.getElementById('painel-modal-verificador');
     const input = document.getElementById('input-verificador-nick');
 
-    // Preenche com o último nick usado (se houver)
     input.value = localStorage.getItem('verificadorNick') || '';
 
     modal.classList.remove('hidden');
@@ -779,7 +783,6 @@ function abrirModalVerificador() {
         input.focus();
     }, 10);
 
-    // Permite confirmar com Enter
     input.onkeydown = (e) => {
         if (e.key === 'Enter') {
             confirmarVerificador();
@@ -810,22 +813,17 @@ window.confirmarVerificador = function () {
         return;
     }
 
-    // Salva o nickname
     verificadorAtual = nick;
     localStorage.setItem('verificadorNick', nick);
 
-    // Obtém o modo de verificação escolhido (capturado pela variável global m_modoVerificacao)
     const modoEscolhido = m_modoVerificacao;
 
-    // Fecha o modal
     fecharModalVerificador();
 
-    // Inicia a verificação após um pequeno delay para a animação
     setTimeout(() => {
         iniciarVerificacao(modoEscolhido);
     }, 350);
 };
-
 
 async function iniciarVerificacao(modo) {
     const prioridadeDireto = (modo === 'direto');
@@ -834,20 +832,22 @@ async function iniciarVerificacao(modo) {
     const textoForumCoordenadores = document.getElementById('lista-forum-coordenadores').value;
     const textoForumGraduadores = document.getElementById('lista-forum-graduadores').value;
 
-    // Combina todos os textos para verificação de presença no fórum
-    const textoForumBruto = textoForumProfessores + '\n' + textoForumCoordenadores + '\n' + textoForumGraduadores;
+    const nicksPorSubforum = {
+        professores: new Set(extrairNicksDoSubforum(textoForumProfessores).map(normalizarNick)),
+        coordenadores: new Set(extrairNicksDoSubforum(textoForumCoordenadores).map(normalizarNick)),
+        graduadores: new Set(extrairNicksDoSubforum(textoForumGraduadores).map(normalizarNick))
+    };
 
-    // Função auxiliar para verificar em quais subfóruns um nick está
     const obterSubforunsDoMembro = (nick) => {
-        const nickLower = nick.toLowerCase();
+        const nickLower = normalizarNick(nick);
         const subforuns = [];
-        if (textoForumProfessores && textoForumProfessores.toLowerCase().includes(nickLower)) {
+        if (nicksPorSubforum.professores.has(nickLower)) {
             subforuns.push('professores');
         }
-        if (textoForumCoordenadores && textoForumCoordenadores.toLowerCase().includes(nickLower)) {
+        if (nicksPorSubforum.coordenadores.has(nickLower)) {
             subforuns.push('coordenadores');
         }
-        if (textoForumGraduadores && textoForumGraduadores.toLowerCase().includes(nickLower)) {
+        if (nicksPorSubforum.graduadores.has(nickLower)) {
             subforuns.push('graduadores');
         }
         return subforuns;
@@ -855,13 +855,13 @@ async function iniciarVerificacao(modo) {
 
     alternarCarregamento(true);
 
-    // Converte para lowercase e remove caracteres invisíveis para comparação robusta
-    const nicksAtivos = new Set(extrairNicksDaListagemMembros(textoSystem).map(n => n.toLowerCase()));
+    const nicksAtivos = new Set(extrairNicksDaListagemMembros(textoSystem).map(normalizarNick));
 
     try {
 
         const urlSheets = `https://sheets.googleapis.com/v4/spreadsheets/${ID_PLANILHA}/values/${encodeURIComponent(INTERVALO_DADOS)}?key=${CHAVE_API}`;
-        const resSheets = await fetch(urlSheets);
+        statusProcesso.innerText = 'Carregando listagem oficial...';
+        const resSheets = await fetchComTimeout(urlSheets);
 
         if (!resSheets.ok) {
             const errorData = await resSheets.json();
@@ -874,8 +874,6 @@ async function iniciarVerificacao(modo) {
         const inativosFinal = [];
         const graduacaoFinal = [];
 
-        // Coletar todos os nicks válidos da planilha (professores oficiais)
-        // Alterado para Map para guardar dados extras (cargo)
         const mapaMembrosOficiais = new Map();
 
         linhas.forEach(linha => {
@@ -886,9 +884,8 @@ async function iniciarVerificacao(modo) {
             if (cargo.toLowerCase().includes('consultor') || cargo.toLowerCase().includes('honrosa')) return;
 
             const estaLicenciado = (linha[7] && linha[7].trim().length > 0);
-            const nickNormalizado = nick.toLowerCase().replace(/[\u200B-\u200D\uFEFF]/g, '');
+            const nickNormalizado = normalizarNick(nick);
 
-            // Adiciona ao mapa com dados vitais
             mapaMembrosOficiais.set(nickNormalizado, {
                 nick,
                 cargo,
@@ -896,8 +893,8 @@ async function iniciarVerificacao(modo) {
                 estaLicenciado
             });
 
-            const estaNoForum = textoForumBruto && textoForumBruto.toLowerCase().includes(nick.toLowerCase());
             const subforunsDoMembro = obterSubforunsDoMembro(nick);
+            const estaNoForum = subforunsDoMembro.length > 0;
 
             if (nicksAtivos.has(nickNormalizado)) {
                 membrosParaVerificar.push({ nick, cargo, estaLicenciado, estaNoForum, subforunsDoMembro });
@@ -908,12 +905,14 @@ async function iniciarVerificacao(modo) {
                     const dataReferencia = ehProfessor ? converterDataPlanilha(linha[2]) : converterDataPlanilha(linha[3]);
 
                     if (dataReferencia) {
-                        const diferencaTempo = Math.abs(new Date() - dataReferencia);
+                        const diferencaTempo = Date.now() - dataReferencia.getTime();
+                        if (diferencaTempo < 0) return;
                         const diasDiferenca = Math.floor(diferencaTempo / (1000 * 60 * 60 * 24));
 
                         if (diasDiferenca > 7) {
                             graduacaoFinal.push({
                                 nick, cargo, dias: diasDiferenca,
+                                diasAtraso: Math.max(0, diasDiferenca - 7),
                                 tipo: ehProfessor ? 'expulsao' : 'rebaixamento',
                                 estaNoForum,
                                 subforunsDoMembro
@@ -922,12 +921,11 @@ async function iniciarVerificacao(modo) {
                     }
                 }
             } else {
-                // Se não está na lista do System, é inativo (independente de licença)
+
                 inativosFinal.push({ nick, cargo, status: 'Sem registro no System', estaNoForum, subforunsDoMembro });
             }
         });
 
-        // NOVA VERIFICAÇÃO: Nicks no fórum que não estão na planilha
         const dadosSubforuns = {
             professores: textoForumProfessores,
             coordenadores: textoForumCoordenadores,
@@ -935,14 +933,12 @@ async function iniciarVerificacao(modo) {
         };
         const removerDoForum = extrairNicksExtrasForum(dadosSubforuns, mapaMembrosOficiais);
 
-
-        // VERIFICAÇÃO AUTOMÁTICA: Grupos do Habbo (busca via API)
         const retirarDosGrupos = await verificarMembrosGruposHabbo(mapaMembrosOficiais, nicksAtivos, prioridadeDireto);
 
-        // VERIFICAÇÃO DE ATIVIDADE (Offline) - Agora usa os sets já buscados para economizar API
-        const offline = await verificarAtividadeHabbo(membrosParaVerificar, prioridadeDireto, retirarDosGrupos.sets);
+        const resultadoOffline = await verificarAtividadeHabbo(membrosParaVerificar, prioridadeDireto, retirarDosGrupos.sets);
+        const offline = resultadoOffline.offline;
+        const errosVerificacao = resultadoOffline.erros;
 
-        // Enriquecer listas com informações de subgrupos e grupos principais (Prof/Grad)
         const enriquecerComDadosHabbo = (lista) => {
             lista.forEach(m => {
                 m.subgruposHabbo = [];
@@ -951,12 +947,10 @@ async function iniciarVerificacao(modo) {
                 if (retirarDosGrupos.sets.dep.has(nickLower)) m.subgruposHabbo.push('Dep. Aplicação');
                 if (retirarDosGrupos.sets.cdc.has(nickLower)) m.subgruposHabbo.push('CDC');
 
-                // Adiciona status de grupos principais (Professores/Graduadores)
                 m.noProfessores = retirarDosGrupos.sets.prof.has(nickLower);
                 m.noGraduadores = retirarDosGrupos.sets.grad.has(nickLower);
                 m.noGrupo = m.noProfessores || m.noGraduadores;
 
-                // Verifica se é administrador (usa o set construído durante a verificação de grupos)
                 m.isAdminNoGrupo = retirarDosGrupos.sets.admins.has(nickLower);
             });
         };
@@ -965,11 +959,9 @@ async function iniciarVerificacao(modo) {
         enriquecerComDadosHabbo(offline);
 
         alternarCarregamento(false);
-        exibirResultados(inativosFinal, offline, graduacaoFinal, removerDoForum, retirarDosGrupos);
+        exibirResultados(inativosFinal, offline, graduacaoFinal, removerDoForum, retirarDosGrupos, errosVerificacao);
 
-        // Registra a verificação na planilha do Google Sheets (em background)
-        registrarVerificacaoNaPlanilha(inativosFinal, graduacaoFinal, offline, removerDoForum, retirarDosGrupos, textoSystem);
-
+        registrarVerificacaoNaPlanilha(inativosFinal, graduacaoFinal, offline, removerDoForum, retirarDosGrupos, textoSystem, errosVerificacao);
 
     } catch (erro) {
         alternarCarregamento(false);
@@ -977,20 +969,10 @@ async function iniciarVerificacao(modo) {
     }
 }
 
-// Função para extrair nicks dos 3 subfóruns que NÃO estão na planilha oficial
-// dadosSubforuns = { professores: string, coordenadores: string, graduadores: string }
-// mapaMembrosOficiais = Map<nickLower, {cargo, ...}>
 function extrairNicksExtrasForum(dadosSubforuns, mapaMembrosOficiais) {
-    // Mapa: nickLower -> { nick, subforuns: Set }
+
     const nickMap = new Map();
 
-    // Contas especiais do fórum para ignorar
-    const contasEspeciais = [
-        'professores', 'admin', 'com. de desenv. cultural',
-        'dep. ap. intendência', 'serv. proteção prof', '[prof] liderança'
-    ];
-
-    // Função auxiliar para obter nível (mesma lógica dos grupos)
     const obterNivelCargo = (cargo) => {
         if (!cargo) return 0;
         const c = cargo.toLowerCase();
@@ -1003,25 +985,15 @@ function extrairNicksExtrasForum(dadosSubforuns, mapaMembrosOficiais) {
         return 0;
     };
 
-    // Função auxiliar para processar texto de um subfórum
     const processarSubforum = (textoForum, nomeSubforum) => {
         if (!textoForum) return;
 
-        const linhas = textoForum.split('\n');
-        linhas.forEach(linha => {
-            // PADRÃO PRINCIPAL: "Enviar uma mensagem privada" + TAB + NICK + TAB + número...
-            if (linha.includes('Enviar uma mensagem privada')) {
-                const partes = linha.split('\t');
-                if (partes.length >= 2 && partes[1]) {
-                    const nick = partes[1].trim();
+        extrairNicksDoSubforum(textoForum).forEach(nick => {
+                    if (CONTAS_FORUM_IGNORADAS.has(normalizarNick(nick))) return;
 
-                    if (!nick || nick.length < 2) return;
-                    if (contasEspeciais.includes(nick.toLowerCase())) return;
-
-                    const nickLower = nick.toLowerCase();
+                    const nickLower = normalizarNick(nick);
                     const dadosOficiais = mapaMembrosOficiais.get(nickLower);
 
-                    // LÓGICA DE PERMISSÃO HIERÁRQUICA
                     let temPermissao = false;
 
                     if (dadosOficiais) {
@@ -1030,22 +1002,16 @@ function extrairNicksExtrasForum(dadosSubforuns, mapaMembrosOficiais) {
                         if (nomeSubforum === 'professores') {
                             temPermissao = nivel >= 2;
                         } else if (nomeSubforum === 'coordenadores') {
-                            // Coordenador (3) ou Estagiário+ (5+)
-                            // Graduador (4) NÃO entra. Professor (2) NÃO entra.
+
                             temPermissao = (nivel === 3) || (nivel >= 5);
                         } else if (nomeSubforum === 'graduadores') {
-                            // Graduador (4) ou Estagiário+ (5+)
-                            // Coordenador (3) NÃO entra. Professor (2) NÃO entra.
+
                             temPermissao = (nivel === 4) || (nivel >= 5);
                         }
                     }
 
-                    // Se tem permissão, IGNORE (não precisa remover)
                     if (temPermissao) return;
 
-                    // Se chegou aqui, ou NÃO existe na planilha, ou existe mas NÃO tem permissão (Rebaixado)
-
-                    // Adiciona ou atualiza no mapa
                     if (!nickMap.has(nickLower)) {
                         nickMap.set(nickLower, {
                             nick: nick,
@@ -1054,17 +1020,13 @@ function extrairNicksExtrasForum(dadosSubforuns, mapaMembrosOficiais) {
                         });
                     }
                     nickMap.get(nickLower).subforuns.add(nomeSubforum);
-                }
-            }
         });
     };
 
-    // Processa cada subfórum
     processarSubforum(dadosSubforuns.professores, 'professores');
     processarSubforum(dadosSubforuns.coordenadores, 'coordenadores');
     processarSubforum(dadosSubforuns.graduadores, 'graduadores');
 
-    // Converte o mapa para array com lista de subfóruns
     const extras = [];
     nickMap.forEach((dados, nickLower) => {
         const subforunsArray = Array.from(dados.subforuns);
@@ -1078,38 +1040,35 @@ function extrairNicksExtrasForum(dadosSubforuns, mapaMembrosOficiais) {
     return extras;
 }
 
-// Função para buscar membros de um grupo do Habbo via API
 async function buscarMembrosGrupoHabbo(groupId, prioridadeDireto = false) {
     const api = `https://www.habbo.com.br/api/public/groups/${groupId}/members`;
     try {
         const response = await fetchWithProxy(api, {}, prioridadeDireto);
-        return await response.json();
+        const dados = await response.json();
+        if (!Array.isArray(dados)) throw new Error('Resposta inesperada da API de grupos');
+        return dados;
     } catch (e) {
         console.warn('[Grupos] Erro crítico ao buscar membros do grupo', groupId, e);
         return [];
     }
 }
 
-// Função para verificar membros nos grupos do Habbo que NÃO estão na planilha oficial
-// mapaMembrosOficiais = Map<nickLower, {cargo, ...}>
-// nicksNoSystem = Set de nicks que apareceram no System (entradas recentes)
 async function verificarMembrosGruposHabbo(mapaMembrosOficiais, nicksNoSystem, prioridadeDireto = false) {
-    // 1. Definição de constantes e listas especiais
+
     const contasEspeciais = ['professores', 'graduadores', '-professores-'];
-    const contasImunesHardcoded = ['rccemblemas', 'arquitetocdc']; // Contas que sempre são imunes
+    const contasImunesHardcoded = ['rccemblemas', 'arquitetocdc'];
 
     try {
-        // 2. Busca PARALELA de todos os grupos necessários (Professores, Grupos Alvos, Imunidade e Avisos)
-        // Isso otimiza drasticamente o tempo, evitando requests individuais por usuário
+
         const promises = [
-            buscarMembrosGrupoHabbo(ID_GRUPO_HABBO, prioridadeDireto),          // 0: Professores (Alvo Remoção)
-            buscarMembrosGrupoHabbo(ID_GRUPO_GRADUADORES, prioridadeDireto),    // 1: Graduadores (Alvo Remoção)
-            buscarMembrosGrupoHabbo(ID_GRUPO_CORREGEDORIA, prioridadeDireto),   // 2: Corregedoria (Imunidade)
-            buscarMembrosGrupoHabbo(ID_GRUPO_GATE, prioridadeDireto),           // 3: GATE (Imunidade)
-            buscarMembrosGrupoHabbo(ID_GRUPO_GSS, prioridadeDireto),            // 4: GSS (Imunidade)
-            buscarMembrosGrupoHabbo(ID_GRUPO_SPP, prioridadeDireto),            // 5: SPP (Aviso)
-            buscarMembrosGrupoHabbo(ID_GRUPO_DEP_APLICACAO, prioridadeDireto),  // 6: Dep. Aplicação (Aviso)
-            buscarMembrosGrupoHabbo(ID_GRUPO_CDC, prioridadeDireto)             // 7: CDC (Aviso)
+            buscarMembrosGrupoHabbo(ID_GRUPO_HABBO, prioridadeDireto),
+            buscarMembrosGrupoHabbo(ID_GRUPO_GRADUADORES, prioridadeDireto),
+            buscarMembrosGrupoHabbo(ID_GRUPO_CORREGEDORIA, prioridadeDireto),
+            buscarMembrosGrupoHabbo(ID_GRUPO_GATE, prioridadeDireto),
+            buscarMembrosGrupoHabbo(ID_GRUPO_GSS, prioridadeDireto),
+            buscarMembrosGrupoHabbo(ID_GRUPO_SPP, prioridadeDireto),
+            buscarMembrosGrupoHabbo(ID_GRUPO_DEP_APLICACAO, prioridadeDireto),
+            buscarMembrosGrupoHabbo(ID_GRUPO_CDC, prioridadeDireto)
         ];
 
         const [
@@ -1118,82 +1077,64 @@ async function verificarMembrosGruposHabbo(mapaMembrosOficiais, nicksNoSystem, p
             membrosSpp, membrosDep, membrosCdc
         ] = await Promise.all(promises);
 
-        // 3. Criação de Sets para busca rápida O(1)
-        // Normalizamos tudo para lowercase para comparação insensível a maiúsculas/minúsculas
-        const setCorregedoria = new Set(membrosCorregedoria.map(m => m.name.toLowerCase()));
-        const setGate = new Set(membrosGate.map(m => m.name.toLowerCase()));
-        const setGss = new Set(membrosGss.map(m => m.name.toLowerCase()));
-        const setSpp = new Set(membrosSpp.map(m => m.name.toLowerCase()));
-        const setDep = new Set(membrosDep.map(m => m.name.toLowerCase()));
-        const setCdc = new Set(membrosCdc.map(m => m.name.toLowerCase()));
-        const setProf = new Set(membrosProf.map(m => m.name.toLowerCase()));
-        const setGrad = new Set(membrosGrad.map(m => m.name.toLowerCase()));
+        const nomesParaSet = membros => new Set(membros.filter(m => m && m.name).map(m => normalizarNick(m.name)));
+        const setCorregedoria = nomesParaSet(membrosCorregedoria);
+        const setGate = nomesParaSet(membrosGate);
+        const setGss = nomesParaSet(membrosGss);
+        const setSpp = nomesParaSet(membrosSpp);
+        const setDep = nomesParaSet(membrosDep);
+        const setCdc = nomesParaSet(membrosCdc);
+        const setProf = nomesParaSet(membrosProf);
+        const setGrad = nomesParaSet(membrosGrad);
 
-        // Mapa para consolidar informações dos membros (evita duplicatas se estiver em Prof e Grad)
         const nickMap = new Map();
 
-        // Helper para validar permissão de estar no grupo
-        // Retorna TRUE se o membro PODE estar no grupo
         const validarPermissaoGrupo = (nomeGrupo, cargo) => {
             if (!cargo) return false;
             const cargoLower = cargo.toLowerCase();
 
-            // Grupo Professores: Qualquer cargo oficial pode
             if (nomeGrupo === 'professores') return true;
 
-            // Grupo Graduadores: Apenas Graduadores, Coordenadores, Líderes, etc.
-            // Professores NÃO podem estar aqui.
             if (nomeGrupo === 'graduadores') {
-                if (cargoLower === 'professor') return false; // Professor não pode ser Graduador
-                return true; // Outros cargos (Graduador, Coordenador, etc) podem
+                if (cargoLower === 'professor') return false;
+                return true;
             }
 
             return true;
         };
 
-        // Helper para processar membros de um grupo alvo
         const processarGrupoAlvo = (listaMembros, nomeGrupo) => {
             listaMembros.forEach(membro => {
                 const nick = membro.name;
                 if (!nick) return;
-                const nickLower = nick.toLowerCase();
+                const nickLower = normalizarNick(nick);
 
-                // Filtros iniciais
-                if (contasEspeciais.includes(nickLower)) return; // Ignora bots (Professores, Graduadores, etc)
+                if (contasEspeciais.includes(nickLower)) return;
 
-                // Verifica Imunidade ANTES de filtrar por planilha oficial
-                // Se for imune, ele entra no mapa para aparecer na lista de Imunes (mesmo se estiver "certo" na planilha)
                 const eContaImuneHardcoded = contasImunesHardcoded.includes(nickLower);
                 const estaCorregedoria = setCorregedoria.has(nickLower);
                 const estaGate = setGate.has(nickLower);
                 const estaGss = setGss.has(nickLower);
                 const eImune = eContaImuneHardcoded || estaCorregedoria || estaGate || estaGss;
 
-                // Verifica status de regularidade
                 const dadosOficiais = mapaMembrosOficiais.get(nickLower);
                 const isOfficial = !!dadosOficiais;
                 const isNoSystem = nicksNoSystem && nicksNoSystem.has(nickLower);
 
-                // MUDANÇA (Ajuste Final): Para esta aba de intrusos, o único critério é estar na PLANILHA
                 const isRegular = isOfficial;
 
-                // LOGICA DE PERMISSÃO DE GRUPO (CRUCIAL)
                 let temPermissaoParaEsteGrupo = true;
                 if (isOfficial) {
                     temPermissaoParaEsteGrupo = validarPermissaoGrupo(nomeGrupo, dadosOficiais.cargo);
                 }
 
-                // Só adiciona ao mapa se for (Imune) OU (Irregular) OU (Regular mas SEM Permissão pro Grupo)
-                // Se for Regular E Imune -> Entra como imune
-                // Se for Regular E SEM Permissão -> Entra para remover (Demotion)
-                // Se for Regular E COM Permissão E NÃO Imune -> ignora (está tudo certo)
                 if (!eImune && isRegular && temPermissaoParaEsteGrupo) return;
 
                 if (!nickMap.has(nickLower)) {
                     nickMap.set(nickLower, {
                         nick,
                         grupos: new Set(),
-                        eImune: false, // Será atualizado depois no loop final
+                        eImune: false,
                         motivoImune: '',
                         subgrupos: [],
                         isAdminNoGrupo: membro.isAdmin || false,
@@ -1205,21 +1146,18 @@ async function verificarMembrosGruposHabbo(mapaMembrosOficiais, nicksNoSystem, p
             });
         };
 
-        // Processa os alvos
         processarGrupoAlvo(membrosProf, 'professores');
         processarGrupoAlvo(membrosGrad, 'graduadores');
 
-        // 4. Verificação de Imunidade e Subgrupos (Localmente)
         const retirar = [];
         const imunes = [];
         const subgrupos = [];
         const admins = new Set();
 
         for (const [nickLower, dados] of nickMap) {
-            // Salva se é admin em um Set global para enriquecimento posterior
+
             if (dados.isAdminNoGrupo) admins.add(nickLower);
 
-            // Verifica Imunidade
             const eContaImune = contasImunesHardcoded.includes(nickLower);
             const estaCorregedoria = setCorregedoria.has(nickLower);
             const estaGate = setGate.has(nickLower);
@@ -1238,10 +1176,9 @@ async function verificarMembrosGruposHabbo(mapaMembrosOficiais, nicksNoSystem, p
                     motivoImune: dados.motivoImune,
                     isAdminNoGrupo: dados.isAdminNoGrupo
                 });
-                continue; // Membro imune, passa para o próximo
+                continue;
             }
 
-            // Verifica Subgrupos (Aviso aos líderes)
             if (setSpp.has(nickLower)) dados.subgrupos.push('SPP');
             if (setDep.has(nickLower)) dados.subgrupos.push('Dep. Aplicação');
             if (setCdc.has(nickLower)) dados.subgrupos.push('CDC');
@@ -1255,7 +1192,6 @@ async function verificarMembrosGruposHabbo(mapaMembrosOficiais, nicksNoSystem, p
                 });
             }
 
-            // Se chegou aqui, não é imune: deve ser removido
             retirar.push({
                 nick: dados.nick,
                 grupos: Array.from(dados.grupos),
@@ -1274,46 +1210,93 @@ async function verificarMembrosGruposHabbo(mapaMembrosOficiais, nicksNoSystem, p
     } catch (erro) {
         console.error('Erro crítico na verificação de grupos:', erro);
         showToast('Erro ao buscar dados dos grupos do Habbo. Verifique o console ou tente novamente.', 'error');
-        return { retirar: [], imunes: [], subgrupos: [], sets: { spp: new Set(), dep: new Set(), cdc: new Set() } };
+        return {
+            retirar: [], imunes: [], subgrupos: [],
+            sets: {
+                spp: new Set(), dep: new Set(), cdc: new Set(),
+                prof: new Set(), grad: new Set(), admins: new Set()
+            }
+        };
     }
 }
 
 async function verificarAtividadeHabbo(membros, prioridadeDireto = false, setsHabbo = null) {
     const listaOffline = [];
-    const BATCH_SIZE = 15;
+    const listaErros = [];
+    const BATCH_SIZE = 5;
+    const MAX_TENTATIVAS = 6;
 
-    // Helper para verificar um único membro (já utiliza o sistema de proxies)
     const processarMembro = async (m) => {
-        if (m.estaLicenciado) return null;
-        try {
-            const targetUrl = `${URL_API_HABBO}?name=${m.nick}`;
-            const res = await fetchWithProxy(targetUrl, {}, prioridadeDireto);
-            const dados = await res.json();
+        if (m.estaLicenciado) return { tipo: 'ok' };
 
-            if (dados.lastAccessTime) {
-                const diasDiferenca = Math.floor((new Date() - new Date(dados.lastAccessTime)) / (1000 * 60 * 60 * 24));
-                if (diasDiferenca >= 5) {
-                    const nickLower = m.nick.toLowerCase();
-                    const noProfessores = setsHabbo ? setsHabbo.prof.has(nickLower) : false;
-                    const noGraduadores = setsHabbo ? setsHabbo.grad.has(nickLower) : false;
-                    const noGrupo = noProfessores || noGraduadores;
+        let ultimoErroMsg = '';
+        for (let tentativa = 1; tentativa <= MAX_TENTATIVAS; tentativa++) {
+            try {
+                const targetUrl = `${URL_API_HABBO}?name=${m.nick}`;
+                const res = await fetchWithProxy(targetUrl, {}, prioridadeDireto);
 
-                    // Retorna TODOS os membros com 5+ dias off (independente de grupo)
-                    // A info de grupo é adicionada como metadata opcional
-                    return {
-                        nick: m.nick, cargo: m.cargo, dias: diasDiferenca,
-                        estaNoForum: m.estaNoForum, subforunsDoMembro: m.subforunsDoMembro,
-                        noGrupo, noProfessores, noGraduadores
-                    };
+                if (res.status === 404) {
+                    return { tipo: 'erro', nick: m.nick, cargo: m.cargo, motivo: 'Usuário não encontrado (Nome alterado/banido)' };
+                }
+
+                const texto = await res.text();
+
+                if (!texto.startsWith('{') && !texto.startsWith('[')) {
+                    ultimoErroMsg = 'Resposta inválida (não-JSON)';
+                    console.warn(`[Offline] ${ultimoErroMsg} para ${m.nick}, tentativa ${tentativa}/${MAX_TENTATIVAS}`);
+                    statusProcesso.innerText = `Analisando: ${m.nick} (Aviso: Proxy retornou não-JSON na tent. ${tentativa}/${MAX_TENTATIVAS})`;
+                    if (tentativa < MAX_TENTATIVAS) {
+                        await new Promise(r => setTimeout(r, 600 * tentativa));
+                        continue;
+                    }
+                    return { tipo: 'erro', nick: m.nick, cargo: m.cargo, motivo: ultimoErroMsg };
+                }
+
+                const dados = JSON.parse(texto);
+
+                if (!dados || typeof dados !== 'object' || !dados.uniqueId) {
+                    ultimoErroMsg = 'Dados incompletos da API';
+                    console.warn(`[Offline] ${ultimoErroMsg} para ${m.nick}, tentativa ${tentativa}/${MAX_TENTATIVAS}`);
+                    statusProcesso.innerText = `Analisando: ${m.nick} (Aviso: JSON malformado na tent. ${tentativa}/${MAX_TENTATIVAS})`;
+                    if (tentativa < MAX_TENTATIVAS) {
+                        await new Promise(r => setTimeout(r, 600 * tentativa));
+                        continue;
+                    }
+                    return { tipo: 'erro', nick: m.nick, cargo: m.cargo, motivo: ultimoErroMsg };
+                }
+
+                if (dados.lastAccessTime) {
+                    const diasDiferenca = Math.floor((new Date() - new Date(dados.lastAccessTime)) / (1000 * 60 * 60 * 24));
+                    if (diasDiferenca >= 5) {
+                        const nickLower = m.nick.toLowerCase();
+                        const noProfessores = setsHabbo ? setsHabbo.prof.has(nickLower) : false;
+                        const noGraduadores = setsHabbo ? setsHabbo.grad.has(nickLower) : false;
+                        const noGrupo = noProfessores || noGraduadores;
+
+                        return {
+                            tipo: 'offline',
+                            nick: m.nick, cargo: m.cargo, dias: diasDiferenca,
+                            estaNoForum: m.estaNoForum, subforunsDoMembro: m.subforunsDoMembro,
+                            noGrupo, noProfessores, noGraduadores,
+                            ultimoAcesso: dados.lastAccessTime
+                        };
+                    }
+                    return { tipo: 'ok' };
+                } else {
+                    return { tipo: 'erro', nick: m.nick, cargo: m.cargo, motivo: 'Perfil privado (último acesso oculto)' };
+                }
+            } catch (e) {
+                ultimoErroMsg = e.message || 'Erro desconhecido';
+                console.warn(`[Offline] Erro ao verificar ${m.nick} (tentativa ${tentativa}/${MAX_TENTATIVAS}):`, ultimoErroMsg);
+                statusProcesso.innerText = `Analisando: ${m.nick} (Erro na tent. ${tentativa}/${MAX_TENTATIVAS}: ${ultimoErroMsg})`;
+                if (tentativa < MAX_TENTATIVAS) {
+                    await new Promise(r => setTimeout(r, 600 * tentativa));
                 }
             }
-        } catch (e) {
-            console.warn(`[Offline] Erro persistente ao verificar ${m.nick}:`, e.message);
         }
-        return null;
+        return { tipo: 'erro', nick: m.nick, cargo: m.cargo, motivo: ultimoErroMsg };
     };
 
-    // Processamento em Bateladas
     for (let i = 0; i < membros.length; i += BATCH_SIZE) {
         const lote = membros.slice(i, i + BATCH_SIZE);
         statusProcesso.innerText = `Analisando membros: ${Math.min(i + BATCH_SIZE, membros.length)}/${membros.length}`;
@@ -1321,11 +1304,16 @@ async function verificarAtividadeHabbo(membros, prioridadeDireto = false, setsHa
         const resultados = await Promise.all(lote.map(m => processarMembro(m)));
 
         resultados.forEach(res => {
-            if (res !== null) listaOffline.push(res);
+            if (res.tipo === 'offline') listaOffline.push(res);
+            else if (res.tipo === 'erro') listaErros.push(res);
         });
+
+        if (i + BATCH_SIZE < membros.length) {
+            await new Promise(r => setTimeout(r, 300));
+        }
     }
 
-    return listaOffline;
+    return { offline: listaOffline, erros: listaErros };
 }
 
 async function verificarGrupo(nick, uniqueId = null, prioridadeDireto = false) {
@@ -1352,88 +1340,94 @@ async function verificarGrupo(nick, uniqueId = null, prioridadeDireto = false) {
     return { noGrupo: false, noProfessores: false, noGraduadores: false };
 }
 
-// Removemos as funções obsoletas: verificarGrupoSemProxy e verificarGrupo duplicada
+window.desconsiderarMembro = function (botao, tipo, idx) {
 
+    if (typeof botao === 'string') {
+        idx = tipo;
+        tipo = botao;
+        botao = null;
+    }
 
-window.desconsiderarMembro = function (tipo, idx) {
-    const card = document.getElementById(`card-${tipo}-${idx}`);
+    const card = botao?.closest('[id^="card-"]') || document.getElementById(`card-${tipo}-${idx}`);
     if (!card) return;
 
-    const btn = card.querySelector('button[onclick*="desconsiderarMembro"]');
-    const icone = btn.querySelector('i');
-    const isDesconsiderado = card.classList.contains('opacity-40');
-
-    // Ícone X vermelho para substituir checkbox
-    const iconeX = '<span class="w-5 h-5 rounded-md bg-red-500 flex items-center justify-center shrink-0"><i class="fa-solid fa-xmark text-white text-[10px]"></i></span>';
+    const btn = botao || card.querySelector('[data-action="desconsiderar"]');
+    const icone = btn?.querySelector('i');
+    const isDesconsiderado = card.dataset.desconsiderado === 'true';
 
     if (isDesconsiderado) {
-        // RESTAURAR
+
         card.classList.remove('opacity-40');
+        card.classList.remove('is-disregarded');
+        card.dataset.desconsiderado = 'false';
         card.style.opacity = '';
         card.style.pointerEvents = '';
+        card.querySelector('[data-desconsiderado-status]')?.remove();
 
-        // Restaura os checkboxes originais
         const labels = card.querySelectorAll('.checkbox-wrapper');
         labels.forEach(label => {
             const spanX = label.querySelector('span.bg-red-500');
-            if (spanX) {
-                // Recria o checkbox
-                const checkbox = document.createElement('input');
-                checkbox.type = 'checkbox';
-                spanX.replaceWith(checkbox);
-            }
-            // Remove estilo de riscado (suporta ml-2 e ml-3)
+            if (spanX) spanX.remove();
+
             const spanTexto = label.querySelector('span[class*="ml-"]');
             if (spanTexto) {
                 spanTexto.classList.remove('line-through', 'text-red-400');
             }
-            // Desmarca e habilita
+
             const chk = label.querySelector('input[type="checkbox"]');
             if (chk) {
-                chk.checked = false;
-                chk.disabled = false;
+                chk.classList.remove('hidden');
+                chk.checked = chk.dataset.estadoAntesDesconsiderar === 'true';
+                chk.disabled = chk.dataset.disabledAntesDesconsiderar === 'true';
+                delete chk.dataset.estadoAntesDesconsiderar;
+                delete chk.dataset.disabledAntesDesconsiderar;
             }
         });
 
-        // Muda ícone de volta para lixeira
-        icone.classList.remove('fa-rotate-left');
-        icone.classList.add('fa-trash-can');
-        btn.title = 'Desconsiderar (dado incorreto)';
+        icone?.classList.remove('fa-rotate-left');
+        icone?.classList.add('fa-trash-can');
+        if (btn) {
+            btn.title = 'Desconsiderar (dado incorreto)';
+            btn.setAttribute('aria-label', 'Desconsiderar membro');
+        }
     } else {
-        // DESCONSIDERAR
-        card.classList.add('opacity-40');
-        card.style.opacity = '0.4';
 
-        // Substitui checkboxes por X vermelhos
+        card.classList.add('opacity-40');
+        card.classList.add('is-disregarded');
+        card.dataset.desconsiderado = 'true';
+        card.style.opacity = '';
+
+        const status = document.createElement('span');
+        status.dataset.desconsideradoStatus = 'true';
+        status.className = 'desconsiderado-status';
+        status.innerHTML = '<i class="fa-solid fa-eye-slash"></i> Desconsiderado';
+        card.appendChild(status);
+
         const labels = card.querySelectorAll('.checkbox-wrapper');
         labels.forEach(label => {
             const chk = label.querySelector('input[type="checkbox"]');
             if (chk) {
-                chk.checked = true;
+                chk.dataset.estadoAntesDesconsiderar = String(chk.checked);
+                chk.dataset.disabledAntesDesconsiderar = String(chk.disabled);
                 chk.disabled = true;
-                // Cria elemento X
-                const xSpan = document.createElement('span');
-                xSpan.className = 'w-5 h-5 rounded-md bg-red-500 flex items-center justify-center shrink-0';
-                xSpan.innerHTML = '<i class="fa-solid fa-xmark text-white text-[10px]"></i>';
-                chk.replaceWith(xSpan);
             }
-            // Adiciona estilo de riscado ao texto (suporta ml-2 e ml-3)
+
             const spanTexto = label.querySelector('span[class*="ml-"]');
             if (spanTexto) {
-                spanTexto.classList.add('line-through', 'text-red-400');
+                spanTexto.classList.remove('line-through', 'text-red-400');
             }
         });
 
-        // Muda ícone para desfazer
-        icone.classList.remove('fa-trash-can');
-        icone.classList.add('fa-rotate-left');
-        btn.title = 'Restaurar membro';
+        icone?.classList.remove('fa-trash-can');
+        icone?.classList.add('fa-rotate-left');
+        if (btn) {
+            btn.title = 'Restaurar membro';
+            btn.setAttribute('aria-label', 'Restaurar membro');
+        }
     }
 
-    // Atualiza o progresso da aba
     verificarProgressoAba(tipo);
 
-    // Registra a ação de desconsiderar na planilha (em background)
     const nickElement = card.querySelector('h4');
     const cargoElement = card.querySelector('p.font-mono');
     if (nickElement) {
@@ -1444,11 +1438,18 @@ window.desconsiderarMembro = function (tipo, idx) {
 };
 
 window.alternarTab = function (tipo) {
-    document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.classList.remove('active');
+        btn.setAttribute('aria-selected', 'false');
+    });
     document.querySelectorAll('.tab-content').forEach(content => content.classList.add('hidden'));
 
-    document.getElementById('tab-' + tipo).classList.add('active');
-    document.getElementById('content-' + tipo).classList.remove('hidden');
+    const tab = document.getElementById('tab-' + tipo);
+    const content = document.getElementById('content-' + tipo);
+    if (!tab || !content) return;
+    tab.classList.add('active');
+    tab.setAttribute('aria-selected', 'true');
+    content.classList.remove('hidden');
 };
 
 window.verificarProgressoAba = function (tipo) {
@@ -1463,15 +1464,10 @@ window.verificarProgressoAba = function (tipo) {
     }
 };
 
-/**
- * Registra um checkbox marcado/desmarcado
- * Atualiza a UI imediatamente e envia para a planilha em background
- */
 window.registrarCheckbox = function (checkbox, categoria, nickMembro, cargoMembro, tipoAcao) {
-    // Atualiza o progresso da aba IMEDIATAMENTE (UI responsiva)
+
     verificarProgressoAba(categoria);
 
-    // Registra na planilha em BACKGROUND (não bloqueia a UI)
     registrarAcaoNaPlanilha(categoria, nickMembro, cargoMembro, tipoAcao, checkbox.checked);
 };
 
@@ -1484,7 +1480,7 @@ window.atualizarProgressoPorCheckboxId = function (chkId) {
     else if (firstId.includes('remover-forum')) verificarProgressoAba('remover-forum');
 };
 
-function exibirResultados(inativos, offline, graduacao, removerForum = [], retirarDosGrupos = { retirar: [], imunes: [], subgrupos: [] }) {
+function exibirResultados(inativos, offline, graduacao, removerForum = [], retirarDosGrupos = { retirar: [], imunes: [], subgrupos: [] }, errosVerificacao = []) {
     membrosInativos = inativos;
     membrosOffline = offline;
     graduacoesPendentes = graduacao;
@@ -1546,7 +1542,49 @@ function exibirResultados(inativos, offline, graduacao, removerForum = [], retir
     renderizarLista(offline, 'lista-offline', 'offline');
     renderizarLista(removerForum, 'lista-remover-forum', 'remover-forum');
 
-    // Renderiza a nova aba de Retirar dos Grupos
+    const tabErros = document.getElementById('tab-erros');
+    const badgeErros = document.getElementById('badge-count-erros');
+    const contadorErros = document.getElementById('contador-erros');
+    const listaErros = document.getElementById('lista-erros');
+    if (tabErros && listaErros) {
+        if (errosVerificacao.length > 0) {
+            tabErros.classList.remove('hidden');
+            tabErros.classList.add('flex');
+            if (badgeErros) {
+                badgeErros.innerText = errosVerificacao.length;
+                badgeErros.classList.add('pulse-active');
+            }
+            if (contadorErros) contadorErros.innerText = errosVerificacao.length + ' encontrados';
+            listaErros.innerHTML = errosVerificacao.map((e, idx) => `
+                <li class="bg-red-50/50 dark:bg-red-950/10 border border-red-200/60 dark:border-red-900/30 rounded-xl p-4 flex items-center gap-3 group hover:border-red-400 dark:hover:border-red-700 transition-all">
+                    <img src="https://www.habbo.com.br/habbo-imaging/avatarimage?img_format=png&user=${e.nick}&direction=2&head_direction=3&size=s&headonly=1"
+                        class="w-10 h-10 rounded-lg border border-red-200 dark:border-red-800 bg-red-100 dark:bg-red-900/30 object-contain scale-150 translate-y-0.5"
+                        onerror="this.style.display='none'">
+                    <div class="flex-grow min-w-0">
+                        <h4 class="font-bold text-sm text-slate-800 dark:text-slate-200 truncate">${e.nick}</h4>
+                        <p class="text-[10px] text-slate-400 dark:text-slate-500 font-mono truncate">${e.cargo}</p>
+                        <p class="text-[10px] text-red-500 dark:text-red-400 mt-0.5 flex items-center gap-1"><i class="fa-solid fa-circle-xmark text-[8px]"></i>${e.motivo}</p>
+                    </div>
+                    <a href="https://www.habbo.com.br/profile/${e.nick}" target="_blank"
+                        class="shrink-0 w-8 h-8 rounded-lg bg-white dark:bg-slate-800 shadow-sm border border-slate-200 dark:border-slate-700 flex items-center justify-center text-red-500 hover:scale-110 transition-transform"
+                        title="Ver perfil no Habbo">
+                        <i class="fa-solid fa-arrow-up-right-from-square text-[10px]"></i>
+                    </a>
+                </li>
+            `).join('');
+        } else {
+            if (badgeErros) {
+                badgeErros.innerText = '0';
+                badgeErros.classList.remove('pulse-active');
+            }
+            if (tabErros.classList.contains('active')) {
+                alternarTab('inativos');
+            }
+            tabErros.classList.add('hidden');
+            tabErros.classList.remove('flex');
+        }
+    }
+
     const listaRetirarGrupos = document.getElementById('lista-retirar-grupos');
     if (listaRetirarGrupos) {
         if (retirarDosGrupos.retirar.length > 0) {
@@ -1561,7 +1599,6 @@ function exibirResultados(inativos, offline, graduacao, removerForum = [], retir
         }
     }
 
-    // Renderiza a seção de imunes
     const secaoImunes = document.getElementById('secao-imunes');
     const listaImunes = document.getElementById('lista-imunes');
     const contadorImunes = document.getElementById('contador-imunes');
@@ -1583,7 +1620,6 @@ function exibirResultados(inativos, offline, graduacao, removerForum = [], retir
         }
     }
 
-    // Renderiza a seção de subgrupos
     const secaoSubgrupos = document.getElementById('secao-subgrupos');
     const listaSubgrupos = document.getElementById('lista-subgrupos');
     const contadorSubgrupos = document.getElementById('contador-subgrupos');
@@ -1592,21 +1628,21 @@ function exibirResultados(inativos, offline, graduacao, removerForum = [], retir
             secaoSubgrupos.classList.remove('hidden');
             if (contadorSubgrupos) contadorSubgrupos.innerText = retirarDosGrupos.subgrupos.length;
             listaSubgrupos.innerHTML = retirarDosGrupos.subgrupos.map(m => {
-                // Definição de Cores para Gradiente
+
                 const cores = [];
-                if (m.subgrupos.includes('SPP')) cores.push('#2e1065'); // Dark Purple
-                if (m.subgrupos.includes('Dep. Aplicação')) cores.push('#581c87'); // Purple (DA)
-                if (m.subgrupos.includes('CDC')) cores.push('#7e22ce'); // Lilac/Purple (CDC - ajustado para gradiente escuro)
+                if (m.subgrupos.includes('SPP')) cores.push('#2e1065');
+                if (m.subgrupos.includes('Dep. Aplicação')) cores.push('#581c87');
+                if (m.subgrupos.includes('CDC')) cores.push('#7e22ce');
 
                 let cardStyle = '';
                 let cardClass = 'bg-white dark:bg-[#1e293b] border-l-4 border-l-slate-300 dark:border-l-slate-600';
 
                 if (cores.length > 1) {
-                    // MISTURA DOIDA: Gradiente com as cores dos grupos
+
                     cardStyle = `style="background-image: linear-gradient(135deg, ${cores.join(', ')}); border-left: none;"`;
-                    cardClass = 'text-white border-0'; // Remove borda lateral e força texto branco
+                    cardClass = 'text-white border-0';
                 } else if (cores.length === 1) {
-                    // Estilo único (mantém o design anterior "limpo" mas com a cor específica)
+
                     if (m.subgrupos.includes('SPP')) {
                         cardClass = 'bg-slate-50 dark:bg-[#0f0518] border-l-4 border-l-[#2e1065]';
                     } else if (m.subgrupos.includes('Dep. Aplicação')) {
@@ -1654,7 +1690,7 @@ function exibirResultados(inativos, offline, graduacao, removerForum = [], retir
                              <p class="font-bold text-base ${textColor}">${m.nick}</p>
                         </div>
                     </div>
-                    
+
                     <div class="flex-grow w-full md:ml-4 border-t md:border-t-0 md:border-l ${isGradient ? 'border-white/20' : 'border-slate-200 dark:border-slate-700'} pt-3 md:pt-0 md:pl-6 relative z-10">
                         <div class="flex flex-wrap gap-2 items-center justify-start md:justify-end">
                             ${badges}
@@ -1671,7 +1707,6 @@ function exibirResultados(inativos, offline, graduacao, removerForum = [], retir
     containerResultados.classList.remove('hidden');
     containerResultados.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
-    // Ativa a primeira aba com resultados
     if (inativos.length > 0) alternarTab('inativos');
     else if (graduacao.length > 0) alternarTab('graduacao');
     else if (offline.length > 0) alternarTab('offline');
@@ -1679,14 +1714,13 @@ function exibirResultados(inativos, offline, graduacao, removerForum = [], retir
     else if (retirarDosGrupos.retirar.length > 0) alternarTab('retirar-grupos');
 }
 
-// Cria um card para membro a ser retirado dos grupos do Habbo
 function criarCardGrupo(m, idx) {
     const urlAvatar = `https://www.habbo.com.br/habbo-imaging/avatarimage?img_format=png&user=${m.nick}&direction=2&head_direction=3&size=l&headonly=0`;
 
     return `
     <li id="card-retirar-groups-${idx}" class="card-standard group rounded-2xl overflow-hidden animate-fade-in" style="animation-delay: ${idx * 0.05}s">
         <div class="flex flex-col md:flex-row">
-            <div class="bg-gradient-to-br from-cyan-50 to-sky-50 dark:from-cyan-900/20 dark:to-sky-900/20 p-6 flex flex-col items-center justify-center md:w-32 shrink-0 border-b md:border-b-0 md:border-r border-slate-100 dark:border-slate-800">
+            <div class="bg-gradient-to-br from-purple-50 to-purple-100 dark:from-purple-900/20 dark:to-purple-950/20 p-6 flex flex-col items-center justify-center md:w-32 shrink-0 border-b md:border-b-0 md:border-r border-slate-100 dark:border-slate-800">
                 <img src="${urlAvatar}" class="w-16 h-24 object-contain drop-shadow-xl transition-transform group-hover:scale-110 duration-500">
             </div>
             <div class="flex-grow p-6">
@@ -1710,12 +1744,12 @@ function criarCardGrupo(m, idx) {
                 <p class="text-sm text-slate-500 dark:text-slate-400 mb-5 flex items-center gap-2">
                     <i class="fa-solid fa-circle-info text-slate-400"></i>${m.cargo && m.cargo !== 'Não consta na listagem' ? 'Cargo atual: ' + m.cargo : m.status}
                 </p>
-                
+
                 <div class="flex flex-wrap gap-3">
                     ${m.grupos.includes('professores') ? `
-                    <label class="checkbox-wrapper flex items-center text-xs font-medium text-slate-600 dark:text-slate-300 bg-cyan-50/50 dark:bg-cyan-900/10 p-3 rounded-xl cursor-pointer hover:bg-cyan-100/50 dark:hover:bg-cyan-900/20 transition-all border border-cyan-100 dark:border-cyan-800/30">
+                    <label class="checkbox-wrapper flex items-center text-xs font-medium text-slate-600 dark:text-slate-300 bg-purple-50/50 dark:bg-purple-900/10 p-3 rounded-xl cursor-pointer hover:bg-purple-100/50 dark:hover:bg-purple-900/20 transition-all border border-purple-100 dark:border-purple-800/30">
                         <input type="checkbox" id="chk-ret-prof-${idx}">
-                        <span class="ml-3"><i class="fa-solid fa-users mr-1.5 text-cyan-500"></i>Tirei do Grupo Professores</span>
+                        <span class="ml-3"><i class="fa-solid fa-users mr-1.5 text-purple-500"></i>Tirei do Grupo Professores</span>
                     </label>` : ''}
                     ${m.grupos.includes('graduadores') ? `
                     <label class="checkbox-wrapper flex items-center text-xs font-medium text-slate-600 dark:text-slate-300 bg-teal-50/50 dark:bg-teal-900/10 p-3 rounded-xl cursor-pointer hover:bg-teal-100/50 dark:hover:bg-teal-900/20 transition-all border border-teal-100 dark:border-teal-800/30">
@@ -1731,7 +1765,6 @@ function criarCardGrupo(m, idx) {
 function criarCardMembro(m, idx, tipo) {
     const urlAvatar = `https://www.habbo.com.br/habbo-imaging/avatarimage?img_format=png&user=${m.nick}&direction=2&head_direction=3&size=l&headonly=0`;
 
-    // Gera badges para subgrupos
     const subgruposBadges = (m.subgruposHabbo || []).map(sg => {
         let styleClass = '';
         let icon = '';
@@ -1767,11 +1800,35 @@ function criarCardMembro(m, idx, tipo) {
     let tipoAcao = 'rebaixamento';
 
     if (tipo === 'graduacao') {
-        badgeStatus = `<span class="bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300 text-[10px] px-2.5 py-1 rounded-full font-bold uppercase tracking-wider">${m.tipo}</span>`;
+        const diasPendentes = Number.isFinite(m.dias) ? m.dias : 0;
+        const diasAtraso = Number.isFinite(m.diasAtraso) ? m.diasAtraso : Math.max(0, diasPendentes - 7);
+        const textoAtraso = `${diasAtraso} ${diasAtraso === 1 ? 'dia' : 'dias'} após o prazo`;
+        const tipoGraduacao = m.tipo === 'expulsao' ? 'Expulsão' : 'Rebaixamento';
+        badgeStatus = `<span class="bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300 text-[10px] px-2.5 py-1 rounded-full font-bold uppercase tracking-wider">${tipoGraduacao} · ${textoAtraso}</span>`;
         tipoAcao = m.tipo;
     }
     if (tipo === 'offline') {
-        badgeStatus = `<span class="bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 text-[10px] px-2.5 py-1 rounded-full font-bold uppercase tracking-wider"><i class="fa-solid fa-clock-rotate-left mr-1.5"></i>${m.dias} dias off</span>`;
+        let tempoOffline = `${m.dias}d`;
+        let acessoInfo = '';
+        if (m.ultimoAcesso) {
+            const dataAcesso = new Date(m.ultimoAcesso);
+            const diffMs = Date.now() - dataAcesso.getTime();
+            const diffDias = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+            const diffHoras = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+            tempoOffline = diffHoras > 0 ? `${diffDias}d ${diffHoras}h` : `${diffDias}d`;
+            const dia = dataAcesso.getDate().toString().padStart(2, '0');
+            const mesNum = (dataAcesso.getMonth() + 1).toString().padStart(2, '0');
+            const hora = dataAcesso.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+            acessoInfo = `<div class="h-4 w-px bg-purple-500/20"></div>
+                <div class="flex items-center gap-1.5 text-[10px] text-slate-400">
+                    <i class="fa-regular fa-calendar text-purple-500/50 text-[9px]"></i>
+                    <span>${dia}/${mesNum} às ${hora}</span>
+                </div>`;
+        }
+        badgeStatus = `<div class="inline-flex items-center gap-2.5 bg-purple-950/40 dark:bg-purple-950/30 pl-1 pr-3 py-1 rounded-full border border-purple-500/20">
+            <span class="bg-purple-500/20 text-purple-400 text-[10px] px-2 py-0.5 rounded-full font-black uppercase tracking-wide"><i class="fa-solid fa-clock-rotate-left mr-1 text-[8px]"></i>${tempoOffline}</span>
+            ${acessoInfo}
+        </div>`;
         const ehProfessor = m.cargo.toLowerCase().includes('professor') && !m.cargo.toLowerCase().includes('geral');
         tipoAcao = ehProfessor ? 'expulsao' : 'rebaixamento';
     }
@@ -1796,7 +1853,6 @@ function criarCardMembro(m, idx, tipo) {
 
     const mostrarOpcoesTirar = tipo === 'inativos' || tipo === 'offline' || tipo === 'graduacao';
 
-    // Layout Unificado
     const contentHtml = tipo === 'remover-forum' ? `
         <p class="text-[11px] text-slate-500 dark:text-slate-400 font-mono bg-slate-100 dark:bg-slate-800/50 px-2 py-1 rounded-md inline-block mb-4 border border-slate-200 dark:border-slate-700/50">${m.status || 'Verificar manualmente'}</p>
         <div class="space-y-3">
@@ -1833,9 +1889,9 @@ function criarCardMembro(m, idx, tipo) {
         </div>
     ` : `
         <p class="text-[11px] text-slate-500 dark:text-slate-400 font-bold uppercase tracking-tighter bg-slate-100 dark:bg-slate-800/50 px-2.5 py-1 rounded-full inline-block mb-4 border border-transparent dark:border-slate-800/50 transition-colors">${m.cargo}</p>
-        
+
         <div class="space-y-4">
-            <!-- Ações Necessárias -->
+
             <div>
                 <div class="flex items-center gap-2 mb-2.5">
                     <i class="fa-solid fa-list-check text-slate-400 text-[10px]"></i>
@@ -1858,21 +1914,21 @@ function criarCardMembro(m, idx, tipo) {
                 </div>
             </div>
 
-            <!-- Grupos Habbo -->
+
             ${mostrarOpcoesTirar ? `
             <div class="pt-1">
                 <div class="flex items-center gap-2 mb-2.5">
-                    <i class="fa-solid fa-hotel text-cyan-500/60 text-[10px]"></i>
+                    <i class="fa-solid fa-hotel text-purple-500/60 text-[10px]"></i>
                     <span class="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">Grupos do Habbo</span>
-                    ${m.noGrupo ? '<span class="w-1.5 h-1.5 rounded-full bg-cyan-500 animate-pulse ml-1"></span>' : ''}
+                    ${m.noGrupo ? '<span class="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse ml-1"></span>' : ''}
                 </div>
                 ${m.noGrupo ? `
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
                     ${tipoAcao === 'expulsao' || tipo === 'inativos' ? `
                         ${m.noProfessores ? `
-                        <label class="checkbox-wrapper flex items-center text-[11px] font-medium text-slate-600 dark:text-slate-300 bg-cyan-50/50 dark:bg-cyan-900/10 p-2.5 rounded-xl cursor-pointer hover:bg-cyan-100/50 dark:hover:bg-cyan-900/20 transition-all border border-cyan-100/30 dark:border-cyan-800/30">
+                        <label class="checkbox-wrapper flex items-center text-[11px] font-medium text-slate-600 dark:text-slate-300 bg-purple-50/50 dark:bg-purple-900/10 p-2.5 rounded-xl cursor-pointer hover:bg-purple-100/50 dark:hover:bg-purple-900/20 transition-all border border-purple-100/30 dark:border-purple-800/30">
                             <input type="checkbox" onchange="registrarCheckbox(this, '${tipo}', '${m.nick}', '${m.cargo}', 'grupo-prof')" id="chk-grupo-prof-${tipo}-${idx}">
-                            <span class="ml-2.5"><i class="fa-solid fa-users mr-1 text-cyan-500"></i>Tirei de Professores</span>
+                            <span class="ml-2.5"><i class="fa-solid fa-users mr-1 text-purple-500"></i>Tirei de Professores</span>
                         </label>` : `<div class="text-[10px] flex items-center gap-2 p-2.5 text-slate-400 bg-slate-50 dark:bg-slate-800/10 rounded-xl italic border border-dashed border-slate-200 dark:border-slate-800"><i class="fa-solid fa-circle-minus"></i>Não está em Professores</div>`}
                         ${m.noGraduadores ? `
                         <label class="checkbox-wrapper flex items-center text-[11px] font-medium text-slate-600 dark:text-slate-300 bg-teal-50/50 dark:bg-teal-900/10 p-2.5 rounded-xl cursor-pointer hover:bg-teal-100/50 dark:hover:bg-teal-900/20 transition-all border border-teal-100/30 dark:border-teal-800/30">
@@ -1895,7 +1951,7 @@ function criarCardMembro(m, idx, tipo) {
                 </div>`}
             </div>` : ''}
 
-            <!-- Subfóruns -->
+
             ${mostrarOpcoesTirar ? `
             <div class="pt-1">
                 <div class="flex items-center gap-2 mb-2.5 text-left">
@@ -1926,7 +1982,7 @@ function criarCardMembro(m, idx, tipo) {
                 </div>`}
             </div>` : ''}
 
-            <!-- Subgrupos (Avisar Liderança) -->
+
             ${m.subgruposHabbo && m.subgruposHabbo.length > 0 && (tipo === 'inativos' || tipoAcao === 'expulsao') ? `
             <div class="pt-1">
                 <div class="flex items-center gap-2 mb-2.5">
@@ -1947,7 +2003,7 @@ function criarCardMembro(m, idx, tipo) {
                 <div class="w-20 h-20 rounded-2xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800 flex items-center justify-center overflow-hidden transition-all group-hover:border-primary/30 avatar-glow relative">
                     <img src="${urlAvatar}" alt="${m.nick}" class="object-contain -mt-2 drop-shadow-lg transition-transform group-hover:scale-110 duration-500">
                 </div>
-                <button onclick="desconsiderarMembro('${tipo}', ${idx})" 
+                <button type="button" data-action="desconsiderar" aria-label="Desconsiderar membro" onclick="desconsiderarMembro(this, '${tipo}', ${idx})"
                     class="group/trash w-10 h-10 rounded-xl bg-slate-50 dark:bg-slate-800/50 hover:bg-red-50 dark:hover:bg-red-900/20 text-slate-400 hover:text-red-500 transition-all flex items-center justify-center border border-slate-100 dark:border-slate-800 hover:border-red-200 dark:hover:border-red-800 shadow-sm"
                     title="Desconsiderar">
                     <i class="fa-solid fa-trash-can text-sm group-hover/trash:shake transition-transform"></i>
@@ -1962,7 +2018,7 @@ function criarCardMembro(m, idx, tipo) {
                     </div>
                     ${badgeStatus}
                 </div>
-                
+
                 ${avisoAdmin}
 
                 ${contentHtml}
@@ -1970,7 +2026,6 @@ function criarCardMembro(m, idx, tipo) {
         </div>
     </div>`;
 }
-
 
 function alternarCarregamento(ativo) {
     const containerVerificar = document.getElementById('container-verificar');
@@ -2100,13 +2155,12 @@ function agruparMembros(lista, tipoModal) {
     return grupos;
 }
 
-// Versão que usa m._idx (índice original) para membros filtrados
 function agruparMembrosComIdx(lista, tipoModal) {
     const grupos = {};
     const hoje = new Date().toLocaleDateString('pt-BR');
 
     lista.forEach(m => {
-        const idx = m._idx; // Usa o índice original
+        const idx = m._idx;
         let dadosAcao = { nome: '', novoCargo: null, tipo: null };
         let motivo = '';
         let acaoNome = '';
@@ -2155,7 +2209,7 @@ function agruparMembrosComIdx(lista, tipoModal) {
             };
         }
         grupos[chave].membros.push(m);
-        grupos[chave].indices.push(idx); // Usa o índice original
+        grupos[chave].indices.push(idx);
     });
     return grupos;
 }
@@ -2187,7 +2241,6 @@ function abrirModal(tipo) {
         prefixoId = 'req-offline';
     }
 
-    // Filtrar membros desconsiderados (que têm card com opacity-40)
     const tipoCard = tipo === 'req-inativos' ? 'inativos' : (tipo === 'req-grad' ? 'graduacao' : 'offline');
     listaFonte = listaFonte.filter(m => {
         const card = document.getElementById(`card-${tipoCard}-${m._idx}`);
@@ -2208,7 +2261,6 @@ function abrirModal(tipo) {
                 </div>`;
     }
 
-    // Lógica de Postagem Coletiva (usa m._idx para índice original)
     const grupos = agruparMembrosComIdx(listaFonte, tipo);
     let coletivaHTML = '';
     Object.values(grupos).forEach(g => {
@@ -2227,7 +2279,6 @@ function abrirModal(tipo) {
                 chkId: `chk-mp-${prefixoId.replace('req-', '')}-${g.indices[idx]}`
             }));
 
-            // Verifica se TODOS do lote já foram feitos
             const todosReqFeitos = g.indices.every(idx => document.getElementById(`chk-${prefixoId}-${idx}`)?.checked);
             const todosMedalFeitos = g.indices.every(idx => document.getElementById(`chk-medal-${idsMedalPrefix}-${idx}`)?.checked);
             const todasMPsFeitas = g.indices.every(idx => document.getElementById(`chk-mp-${prefixoId.replace('req-', '')}-${idx}`)?.checked);
@@ -2245,18 +2296,18 @@ function abrirModal(tipo) {
                                 <p class="text-sm font-medium text-slate-700 dark:text-slate-200">${nicks}</p>
                             </div>
                             <div class="flex flex-col md:flex-row gap-3">
-                                <button class="btn ${todosReqFeitos ? 'bg-green-600' : 'bg-purple-600 hover:bg-purple-700'} text-white flex-1 py-3 rounded-xl text-sm font-bold flex items-center justify-center gap-2 shadow-lg shadow-purple-500/20" 
+                                <button class="btn ${todosReqFeitos ? 'bg-green-600' : 'bg-purple-600 hover:bg-purple-700'} text-white flex-1 py-3 rounded-xl text-sm font-bold flex items-center justify-center gap-2 shadow-lg shadow-purple-500/20"
                                     ${todosReqFeitos ? 'disabled' : ''}
                                     onclick="postarAcao(this, '${encodeURIComponent(bbcodeLote)}', '${ID_TOPICO_FORUM}', '${idsReq}')">
                                     <i class="fa-solid ${todosReqFeitos ? 'fa-check' : 'fa-file-signature'}"></i> ${todosReqFeitos ? 'Requerimentos Postados' : 'Postar Requerimentos'}
                                 </button>
                                 ${g.tipoAcao && g.tipoAcao !== 'saida' ? `
-                                <button class="btn ${todosMedalFeitos ? 'bg-green-600' : 'bg-indigo-600 hover:bg-indigo-700'} text-white flex-1 py-3 rounded-xl text-sm font-bold flex items-center justify-center gap-2 shadow-lg shadow-indigo-500/20" 
+                                <button class="btn ${todosMedalFeitos ? 'bg-green-600' : 'bg-indigo-600 hover:bg-indigo-700'} text-white flex-1 py-3 rounded-xl text-sm font-bold flex items-center justify-center gap-2 shadow-lg shadow-indigo-500/20"
                                     ${todosMedalFeitos ? 'disabled' : ''}
                                     onclick="postarMedalha(this, '${nicks}', '${g.tipoAcao}', '${g.motivoMedalha}', '${g.cargoOriginal}', '${idsMedal},${idsReq}')">
                                     <i class="fa-solid ${todosMedalFeitos ? 'fa-check' : 'fa-medal'}"></i> ${todosMedalFeitos ? 'Medalhas Postadas' : 'Postar Medalhas'}
                                 </button>
-                                <button class="btn ${todasMPsFeitas ? 'bg-green-600' : 'bg-amber-500 hover:bg-amber-600'} text-white flex-1 py-3 rounded-xl text-sm font-bold flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20" 
+                                <button class="btn ${todasMPsFeitas ? 'bg-green-600' : 'bg-amber-500 hover:bg-amber-600'} text-white flex-1 py-3 rounded-xl text-sm font-bold flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20"
                                     ${todasMPsFeitas ? 'disabled' : ''}
                                     onclick="iniciarMPLote(${JSON.stringify(mpsData).replace(/"/g, '&quot;')})">
                                     <i class="fa-solid ${todasMPsFeitas ? 'fa-check' : 'fa-envelopes-bulk'}"></i> ${todasMPsFeitas ? 'MPs Enviadas' : 'Enviar MPs'}
@@ -2293,7 +2344,7 @@ function abrirModal(tipo) {
         const mpFeita = document.getElementById(chkId?.replace('chk-req-', 'chk-mp-'))?.checked;
 
         let botoes = `
-                    <button class="btn ${reqFeito ? 'bg-green-600 cursor-default' : 'btn-primary'} flex-1 py-2 rounded-lg text-sm flex items-center justify-center gap-2" 
+                    <button class="btn ${reqFeito ? 'bg-green-600 cursor-default' : 'btn-primary'} flex-1 py-2 rounded-lg text-sm flex items-center justify-center gap-2"
                         ${reqFeito ? 'disabled' : ''}
                         onclick="postarAcao(this, '${bbCodificado}', '${ID_TOPICO_FORUM}', '${chkId}')">
                         <i class="fa-solid ${reqFeito ? 'fa-check' : 'fa-paper-plane'}"></i> ${reqFeito ? 'Postado' : 'Postar Requerimento'}
@@ -2301,7 +2352,7 @@ function abrirModal(tipo) {
 
         if (tipoAcao) {
             botoes += `
-                    <button class="btn ${medalFeita ? 'bg-green-600 cursor-default' : 'bg-purple-600 hover:bg-purple-700'} text-white flex-1 py-2 rounded-lg text-sm flex items-center justify-center gap-2" 
+                    <button class="btn ${medalFeita ? 'bg-green-600 cursor-default' : 'bg-purple-600 hover:bg-purple-700'} text-white flex-1 py-2 rounded-lg text-sm flex items-center justify-center gap-2"
                         ${medalFeita ? 'disabled' : ''}
                         onclick="postarMedalha(this, '${m.nick}', '${tipoAcao}', '${motivo}', '${m.cargo}', '${medalChkId}')">
                         <i class="fa-solid ${medalFeita ? 'fa-check' : 'fa-medal'}"></i> ${medalFeita ? 'Postada' : 'Postar Medalha'}
@@ -2311,7 +2362,7 @@ function abrirModal(tipo) {
         if (tipoModal !== 'req-inativos') {
             const mpChkId = chkId ? chkId.replace('chk-req-', 'chk-mp-') : '';
             botoes += `
-                    <button class="btn ${mpFeita ? 'bg-green-600 cursor-default' : 'bg-amber-500 hover:bg-amber-600'} text-white flex-1 py-2 rounded-lg text-sm flex items-center justify-center gap-2" 
+                    <button class="btn ${mpFeita ? 'bg-green-600 cursor-default' : 'bg-amber-500 hover:bg-amber-600'} text-white flex-1 py-2 rounded-lg text-sm flex items-center justify-center gap-2"
                         ${mpFeita ? 'disabled' : ''}
                         onclick="abrirModalMP('${m.nick}', '${tipoAcao || 'rebaixamento'}', '${motivoReq}', '${mpChkId}')">
                         <i class="fa-solid ${mpFeita ? 'fa-check' : 'fa-envelope'}"></i> ${mpFeita ? 'Enviada' : 'Enviar MP'}
@@ -2366,7 +2417,7 @@ function abrirModal(tipo) {
         listaFonte.forEach(m => {
             const i = m._idx;
             const dadosAcao = obterAcao(m.cargo);
-            const acao = dadosAcao.nome; // 'EXPULSÃO' ou 'REBAIXAMENTO'
+            const acao = dadosAcao.nome;
             const campos = {};
 
             if (acao === 'EXPULSÃO') {
@@ -2631,8 +2682,6 @@ window.enviarMP = function () {
         });
 };
 
-
-
 window.postarMedalha = function (btn, nick, tipo, motivo, cargo, chkId) {
     const resp = document.getElementById('nick-responsavel').value;
     if (!resp) { showToast('Digite seu nick no topo do modal.', 'error'); return; }
@@ -2645,7 +2694,7 @@ window.postarMedalha = function (btn, nick, tipo, motivo, cargo, chkId) {
         return;
     }
 
-    // Armazena dados no botão para uso no callback
+
     const qtdMedalhas = (tipo === 'expulsao') ? -100 : -50;
     btn.dataset.macroData = JSON.stringify({ nick, cargo, motivo, qtd: qtdMedalhas });
 
@@ -2705,22 +2754,21 @@ window.voltarVerificacaoNormal = function () {
     document.getElementById('conteudo-verificacao-erro').classList.add('hidden');
 };
 
-// Função para enviar dados ao Macro (Google Apps Script do AF)
+
 function enviarDadosMacro(nick, cargo, motivo, quantidadeMedalhas) {
     const responsavel = document.getElementById('nick-responsavel').value;
     const periodo = obterDataMedalha();
 
-    // Formata Data/Hora Atual
+
     const d = new Date();
     const meses = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
     const dataFmt = `${d.getDate().toString().padStart(2, '0')} ${meses[d.getMonth()]} ${d.getFullYear()}`;
     const horaFmt = `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')}`;
     const horarioEnvio = `${dataFmt} ${horaFmt}`;
 
-    // URL do Macro (Extraído do af.html para Professores)
+
     const MACRO_URL = "https://script.google.com/macros/s/AKfycbw4EsCXpPs-7ORsxAtcZ4Pul-CaW_01JO0ADw4pwJ9D0PXOxeSMsuCxyxm1WAf1otG9/exec";
 
-    // Prepara payload
     const formData = new FormData();
     formData.append('horario_envio', horarioEnvio);
     formData.append('responsavel_med', responsavel);
@@ -2730,7 +2778,6 @@ function enviarDadosMacro(nick, cargo, motivo, quantidadeMedalhas) {
     formData.append('gratificados_med', nick);
     formData.append('numero_med', quantidadeMedalhas);
 
-    // Ajusta o motivo conforme lógica do af.html
     let motivoFinal = motivo;
     if (motivo === 'Cumprimento de meta do cargo de' || motivo === 'Não cumprimento de meta do cargo de') {
         motivoFinal = `${motivo} ${cargo}.`;
@@ -2741,17 +2788,16 @@ function enviarDadosMacro(nick, cargo, motivo, quantidadeMedalhas) {
 
     console.log(`[Macro] Enviando dados para ${nick}...`, Object.fromEntries(formData));
 
-    // Envia (no-cors pois é Google Apps Script)
     fetch(MACRO_URL, {
         method: 'POST',
         mode: 'no-cors',
         body: formData
     }).then(() => {
         console.log('[Macro] Dados enviados com sucesso (presumido via no-cors).');
-        // showToast silent
+
     }).catch(err => {
         console.error('[Macro] Erro ao enviar:', err);
-        // showToast silent
+
     });
 }
 
