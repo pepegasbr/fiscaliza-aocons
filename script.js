@@ -18,6 +18,12 @@ const ID_GRUPO_CDC = 'g-hhbr-b7293bcaf77d1a7ef22ee7b274bc78a9';
 const ID_GRUPO_CORREGEDORIA = 'g-hhbr-8e057e366f037ccbc2a5de1bdbb8f6a0';
 const ID_GRUPO_GATE = 'g-hhbr-6a69ea77637188b67832c7b8e034bf5c';
 const ID_GRUPO_GSS = 'g-hhbr-4d2f8fa6bad619fb52f9f9b97de71a87';
+const GRUPOS_OUTRAS_COMPANHIAS = [
+    { id: 'g-hhbr-ccab1135a807c68fe344847aa48bc5e7', nome: 'Treinadores' },
+    { id: 'g-hhbr-c8daaf22635518663d1581e027d47f83', nome: 'Escola de Formação de Executivos' },
+    { id: 'g-hhbr-26df51cf81290fd762ad389b72b95ab6', nome: 'Instrutores' },
+    { id: 'g-hhbr-b8c5904238ca6050d159bfa7736ff7b8', nome: 'Supervisores' }
+];
 
 const ID_TOPICO_FORUM = 32243;
 const ID_TOPICO_MEDALHA = 36745;
@@ -139,6 +145,7 @@ function gerarResumoLog() {
     if (r.graduacao?.length) resumo.push(`${r.graduacao.length} Grad.`);
     if (r.offline?.length) resumo.push(`${r.offline.length} Off.`);
     if (r.removerForum?.length) resumo.push(`${r.removerForum.length} Fórum`);
+    if (r.retirarDosGrupos?.outros?.length) resumo.push(`${r.retirarDosGrupos.outros.length} Outras companhias`);
     return resumo.join(', ') || 'Nenhuma pendência';
 }
 
@@ -479,7 +486,7 @@ function restaurarEstado(estado) {
         estado.resultados.offline || [],
         estado.resultados.graduacao || [],
         estado.resultados.removerForum || [],
-        estado.resultados.retirarDosGrupos || { retirar: [], subgrupos: [], sets: {} },
+        estado.resultados.retirarDosGrupos || { retirar: [], subgrupos: [], outros: [], sets: {} },
         estado.resultados.erros || []
     );
 
@@ -1068,14 +1075,21 @@ async function verificarMembrosGruposHabbo(mapaMembrosOficiais, nicksNoSystem, p
             buscarMembrosGrupoHabbo(ID_GRUPO_GSS, prioridadeDireto),
             buscarMembrosGrupoHabbo(ID_GRUPO_SPP, prioridadeDireto),
             buscarMembrosGrupoHabbo(ID_GRUPO_DEP_APLICACAO, prioridadeDireto),
-            buscarMembrosGrupoHabbo(ID_GRUPO_CDC, prioridadeDireto)
+            buscarMembrosGrupoHabbo(ID_GRUPO_CDC, prioridadeDireto),
+            ...GRUPOS_OUTRAS_COMPANHIAS.map(grupo =>
+                buscarMembrosGrupoHabbo(grupo.id, prioridadeDireto)
+            )
         ];
 
         const [
             membrosProf, membrosGrad,
             membrosCorregedoria, membrosGate, membrosGss,
-            membrosSpp, membrosDep, membrosCdc
+            membrosSpp, membrosDep, membrosCdc,
+            ...membrosOutrasCompanhias
         ] = await Promise.all(promises);
+        const detalhesOutrasCompanhias = await Promise.all(
+            GRUPOS_OUTRAS_COMPANHIAS.map(grupo => buscarDadosGrupoHabbo(grupo.id, prioridadeDireto))
+        );
 
         const nomesParaSet = membros => new Set(membros.filter(m => m && m.name).map(m => normalizarNick(m.name)));
         const setCorregedoria = nomesParaSet(membrosCorregedoria);
@@ -1086,6 +1100,33 @@ async function verificarMembrosGruposHabbo(mapaMembrosOficiais, nicksNoSystem, p
         const setCdc = nomesParaSet(membrosCdc);
         const setProf = nomesParaSet(membrosProf);
         const setGrad = nomesParaSet(membrosGrad);
+        const setsOutrasCompanhias = membrosOutrasCompanhias.map(nomesParaSet);
+        const outros = [];
+
+        mapaMembrosOficiais.forEach((dadosOficiais, nickLower) => {
+            const eImune = contasImunesHardcoded.includes(nickLower)
+                || setCorregedoria.has(nickLower)
+                || setGate.has(nickLower)
+                || setGss.has(nickLower);
+            if (eImune) return;
+
+            const grupos = GRUPOS_OUTRAS_COMPANHIAS
+                .filter((grupo, indice) => setsOutrasCompanhias[indice].has(nickLower))
+                .map(grupo => ({
+                    nome: grupo.nome,
+                    badgeCode: detalhesOutrasCompanhias[GRUPOS_OUTRAS_COMPANHIAS.indexOf(grupo)]?.badgeCode || ''
+                }));
+
+            if (grupos.length > 0) {
+                outros.push({
+                    nick: dadosOficiais.nick,
+                    cargo: dadosOficiais.cargo,
+                    grupos
+                });
+            }
+        });
+
+        outros.sort((a, b) => a.nick.localeCompare(b.nick, 'pt-BR', { sensitivity: 'base' }));
 
         const nickMap = new Map();
 
@@ -1204,6 +1245,7 @@ async function verificarMembrosGruposHabbo(mapaMembrosOficiais, nicksNoSystem, p
             retirar,
             imunes,
             subgrupos,
+            outros,
             sets: { spp: setSpp, dep: setDep, cdc: setCdc, prof: setProf, grad: setGrad, admins }
         };
 
@@ -1211,7 +1253,7 @@ async function verificarMembrosGruposHabbo(mapaMembrosOficiais, nicksNoSystem, p
         console.error('Erro crítico na verificação de grupos:', erro);
         showToast('Erro ao buscar dados dos grupos do Habbo. Verifique o console ou tente novamente.', 'error');
         return {
-            retirar: [], imunes: [], subgrupos: [],
+            retirar: [], imunes: [], subgrupos: [], outros: [],
             sets: {
                 spp: new Set(), dep: new Set(), cdc: new Set(),
                 prof: new Set(), grad: new Set(), admins: new Set()
@@ -1480,7 +1522,8 @@ window.atualizarProgressoPorCheckboxId = function (chkId) {
     else if (firstId.includes('remover-forum')) verificarProgressoAba('remover-forum');
 };
 
-function exibirResultados(inativos, offline, graduacao, removerForum = [], retirarDosGrupos = { retirar: [], imunes: [], subgrupos: [] }, errosVerificacao = []) {
+function exibirResultados(inativos, offline, graduacao, removerForum = [], retirarDosGrupos = { retirar: [], imunes: [], subgrupos: [], outros: [] }, errosVerificacao = []) {
+    retirarDosGrupos.outros = retirarDosGrupos.outros || [];
     membrosInativos = inativos;
     membrosOffline = offline;
     graduacoesPendentes = graduacao;
@@ -1491,18 +1534,30 @@ function exibirResultados(inativos, offline, graduacao, removerForum = [], retir
     const badgeOffline = document.getElementById('badge-count-offline');
     const badgeRemoverForum = document.getElementById('badge-count-remover-forum');
     const badgeRetirarGrupos = document.getElementById('badge-count-retirar-grupos');
+    const badgeOutros = document.getElementById('badge-count-outros');
 
-    if (badgeInativos) badgeInativos.innerText = inativos.length;
-    if (badgeGraduacao) badgeGraduacao.innerText = graduacao.length;
-    if (badgeOffline) badgeOffline.innerText = offline.length;
-    if (badgeRemoverForum) badgeRemoverForum.innerText = removerForum.length;
-    if (badgeRetirarGrupos) badgeRetirarGrupos.innerText = retirarDosGrupos.retirar.length;
+    const atualizarStatusAba = (tipo, badge, quantidade, classeAlerta) => {
+        const aba = document.getElementById(`tab-${tipo}`);
+        if (!aba || !badge) return;
 
-    if (inativos.length > 0 && badgeInativos) badgeInativos.classList.add('pulse-active');
-    if (graduacao.length > 0 && badgeGraduacao) badgeGraduacao.classList.add('pulse-active');
-    if (offline.length > 0 && badgeOffline) badgeOffline.classList.add('pulse-active');
-    if (removerForum.length > 0 && badgeRemoverForum) badgeRemoverForum.classList.add('pulse-active');
-    if (retirarDosGrupos.retirar.length > 0 && badgeRetirarGrupos) badgeRetirarGrupos.classList.add('pulse-active');
+        aba.classList.remove('status-ok', 'status-alert-red', 'status-alert-amber');
+        badge.classList.remove('pulse-active');
+        badge.innerText = quantidade || '✓';
+
+        if (quantidade > 0) {
+            aba.classList.add(classeAlerta);
+            badge.classList.add('pulse-active');
+        } else {
+            aba.classList.add('status-ok');
+        }
+    };
+
+    atualizarStatusAba('inativos', badgeInativos, inativos.length, 'status-alert-red');
+    atualizarStatusAba('graduacao', badgeGraduacao, graduacao.length, 'status-alert-red');
+    atualizarStatusAba('offline', badgeOffline, offline.length, 'status-alert-red');
+    atualizarStatusAba('remover-forum', badgeRemoverForum, removerForum.length, 'status-alert-amber');
+    atualizarStatusAba('retirar-grupos', badgeRetirarGrupos, retirarDosGrupos.retirar.length, 'status-alert-amber');
+    atualizarStatusAba('outros', badgeOutros, retirarDosGrupos.outros.length, 'status-alert-amber');
 
     const counterInativos = document.getElementById('contador-inativos');
     if (counterInativos) counterInativos.innerText = inativos.length + " encontrados";
@@ -1518,6 +1573,9 @@ function exibirResultados(inativos, offline, graduacao, removerForum = [], retir
 
     const contadorRetirarGrupos = document.getElementById('contador-retirar-grupos');
     if (contadorRetirarGrupos) contadorRetirarGrupos.innerText = retirarDosGrupos.retirar.length + " encontrados";
+
+    const contadorOutros = document.getElementById('contador-outros');
+    if (contadorOutros) contadorOutros.innerText = retirarDosGrupos.outros.length + " encontrados";
 
     const renderizarLista = (lista, containerId, tipo) => {
         const container = document.getElementById(containerId);
@@ -1541,6 +1599,21 @@ function exibirResultados(inativos, offline, graduacao, removerForum = [], retir
     renderizarLista(graduacao, 'lista-graduacao', 'graduacao');
     renderizarLista(offline, 'lista-offline', 'offline');
     renderizarLista(removerForum, 'lista-remover-forum', 'remover-forum');
+
+    const tabOutros = document.getElementById('tab-outros');
+    const listaOutros = document.getElementById('lista-outros');
+    if (tabOutros && listaOutros) {
+        if (retirarDosGrupos.outros.length > 0) {
+            tabOutros.classList.remove('hidden');
+            tabOutros.classList.add('flex');
+            listaOutros.innerHTML = retirarDosGrupos.outros.map((m, idx) => criarCardOutraCompanhia(m, idx)).join('');
+        } else {
+            if (tabOutros.classList.contains('active')) {
+                alternarTab('inativos');
+            }
+            listaOutros.innerHTML = '';
+        }
+    }
 
     const tabErros = document.getElementById('tab-erros');
     const badgeErros = document.getElementById('badge-count-erros');
@@ -1712,6 +1785,65 @@ function exibirResultados(inativos, offline, graduacao, removerForum = [], retir
     else if (offline.length > 0) alternarTab('offline');
     else if (removerForum.length > 0) alternarTab('remover-forum');
     else if (retirarDosGrupos.retirar.length > 0) alternarTab('retirar-grupos');
+    else if (retirarDosGrupos.outros.length > 0) alternarTab('outros');
+}
+
+async function buscarDadosGrupoHabbo(groupId, prioridadeDireto = false) {
+    const api = `https://www.habbo.com.br/api/public/groups/${groupId}`;
+    try {
+        const response = await fetchWithProxy(api, {}, prioridadeDireto);
+        const dados = await response.json();
+        if (!dados || !dados.id) throw new Error('Resposta inesperada da API de grupos');
+        return dados;
+    } catch (e) {
+        console.warn('[Grupos] Não foi possível buscar o emblema do grupo', groupId, e);
+        return null;
+    }
+}
+
+function criarCardOutraCompanhia(m, idx) {
+    const urlAvatar = `https://www.habbo.com.br/habbo-imaging/avatarimage?img_format=png&user=${encodeURIComponent(m.nick)}&direction=2&head_direction=3&size=l&headonly=0`;
+    const estilosGrupos = {
+        'Supervisores': 'border-emerald-400 dark:border-emerald-700 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-800 dark:text-emerald-200',
+        'Treinadores': 'border-red-400 dark:border-red-700 bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-200',
+        'Instrutores': 'border-blue-950 dark:border-blue-800 bg-blue-950 dark:bg-blue-950 text-blue-100 dark:text-blue-100',
+        'Escola de Formação de Executivos': 'border-cyan-400 dark:border-cyan-700 bg-cyan-100 dark:bg-cyan-900/30 text-cyan-800 dark:text-cyan-200'
+    };
+    const badges = m.grupos.map(grupo => {
+        const nomeGrupo = typeof grupo === 'string' ? grupo : grupo.nome;
+        const badgeCode = typeof grupo === 'string' ? '' : grupo.badgeCode;
+        const urlEmblema = badgeCode ? `https://www.habbo.com.br/habbo-imaging/badge/${encodeURIComponent(badgeCode)}.gif` : '';
+        return `
+            <span class="inline-flex items-center gap-2 rounded-xl border ${estilosGrupos[nomeGrupo] || 'border-amber-300 dark:border-amber-700 bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-200'} px-2.5 py-1.5 text-[10px] font-black uppercase tracking-wide">
+                ${urlEmblema ? `<img src="${urlEmblema}" alt="Emblema de ${nomeGrupo}" class="w-5 h-5 object-contain" onerror="this.remove()">` : '<i class="fa-solid fa-people-arrows"></i>'}
+                ${nomeGrupo}
+            </span>
+        `;
+    }).join('');
+
+    return `
+    <li id="card-outros-${idx}" class="card-standard group rounded-2xl overflow-hidden animate-fade-in border border-amber-200 dark:border-amber-900/50" style="animation-delay: ${idx * 0.05}s">
+        <div class="flex flex-col sm:flex-row sm:items-center gap-4 p-4">
+            <div class="w-16 h-20 shrink-0 rounded-xl bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 overflow-hidden flex items-center justify-center self-center sm:self-auto">
+                <img src="${urlAvatar}" alt="${m.nick}" class="w-14 h-20 object-contain drop-shadow-lg transition-transform group-hover:scale-105 duration-300">
+            </div>
+            <div class="flex-grow min-w-0 text-center sm:text-left">
+                <div class="flex flex-wrap items-center justify-center sm:justify-start gap-2">
+                    <h4 class="text-lg font-black text-slate-800 dark:text-white leading-none">${m.nick}</h4>
+                    <span class="inline-flex items-center gap-1 rounded-md bg-red-100 dark:bg-red-950/30 px-2 py-1 text-[9px] font-black uppercase tracking-wide text-red-700 dark:text-red-300">
+                        <i class="fa-solid fa-triangle-exclamation"></i> Outra companhia
+                    </span>
+                </div>
+                <p class="mt-2 text-xs text-slate-500 dark:text-slate-400">Na listagem: <strong>${m.cargo}</strong></p>
+                <p class="mt-3 mb-1 text-[10px] font-black uppercase tracking-widest text-amber-700 dark:text-amber-300">Achado em:</p>
+                <div class="flex flex-wrap justify-center sm:justify-start gap-2">${badges}</div>
+            </div>
+            <a href="https://system.policercc.com.br/perfil/${encodeURIComponent(m.nick)}" target="_blank"
+                class="shrink-0 self-center sm:self-auto inline-flex items-center gap-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-bold text-slate-600 dark:text-slate-300 hover:border-amber-400 hover:text-amber-600 transition-all">
+                Perfil no RCCSystem <i class="fa-solid fa-arrow-up-right-from-square"></i>
+            </a>
+        </div>
+    </li>`;
 }
 
 function criarCardGrupo(m, idx) {
