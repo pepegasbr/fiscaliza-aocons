@@ -2479,6 +2479,16 @@ function abrirModal(tipo) {
                 `;
     }
 
+  function escaparHTML(texto) {
+    if (!texto) return '';
+    return String(texto)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
     const gerarItem = (m, titulo, bbcode, tipoAcao, motivo, motivoReq, chkId, medalChkId, tipoModal) => {
         const bbCodificado = encodeURIComponent(bbcode);
 
@@ -2518,7 +2528,7 @@ function abrirModal(tipo) {
                         <h4 class="font-bold text-slate-800 dark:text-slate-100">${m.nick}</h4>
                         <span class="text-xs font-mono bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded">${titulo}</span>
                     </div>
-                    <pre class="bg-slate-50 dark:bg-[#020617] p-3 rounded-lg text-[10px] text-slate-600 dark:text-slate-400 font-mono mb-4 overflow-x-auto border border-slate-200 dark:border-slate-800 custom-scrollbar">${bbcode}</pre>
+                    <pre class="bg-slate-50 dark:bg-[#020617] p-3 rounded-lg text-[10px] text-slate-600 dark:text-slate-400 font-mono mb-4 overflow-x-auto border border-slate-200 dark:border-slate-800 custom-scrollbar">${escaparHTML(bbcode)}</pre>
                     <div class="flex flex-col md:flex-row gap-3">${botoes}</div>
                 </div>`;
     };
