@@ -2185,31 +2185,42 @@ function obterAcao(cargo) {
 }
 
 function criarBBCode(titulo, campos) {
-    const cor = "#560c7e";
-    let codigo = `[font=Poppins][center][table  style="border-color: black; border-radius: 10px; overflow: hidden; width: auto;" bgcolor="${cor}"][tr][td][size=16][center][color=#ffffff][b]${titulo}[/b][/color][/center][/size][/td][/tr][/table][/center]\n[size=13][left]`;
+    const tituloUpper = (titulo || '').trim().toUpperCase();
+    const nick = campos["Nickname"] || "";
+    const motivo = campos["Motivo"] || "";
+    const data = campos["Data"] || obterDataMedalha();
 
-    if (titulo === "EXPULSÃO") {
-        const nick = campos["Nickname"];
-        codigo += `[font=Poppins][b][color=#000000]${nick}[/b][/color][/font]\n`;
-        for (const [chave, valor] of Object.entries(campos)) {
-            if (chave !== "Nickname" && valor) {
-                codigo += `[color=${cor}][b]${chave}[/b][/color]: ${valor}\n`;
-            }
-        }
-    } else {
-        for (const [chave, valor] of Object.entries(campos)) {
-            if (valor) {
-                codigo += `[color=${cor}][b]${chave}[/b][/color]: ${valor}\n`;
-            }
-        }
+    if (tituloUpper === "SAÍDA" || tituloUpper === "SAIDA") {
+        const cargo = campos["Cargo"] || "";
+        const permissao = campos["Permissão"] || "Conselho da Segurança";
+        return `[table  style="width: max-content; min-width: 420px; max-width: 100%; margin: 10% auto 0 auto; border: none!important; position: relative; border-radius: 14px; box-sizing: border-box;" bgcolor="#2C1830"][tr style="border: none!important"][td style="border: none!important; padding: 0; position: relative; overflow: visible"][table  style="width: 100%; border: none!important; border-radius: 14px; overflow: hidden; position: relative; box-sizing: border-box;" bgcolor="#2C1830"][tr style="border: none!important"][td style="border: none!important; padding: 0; position: relative; overflow: hidden"][table  style="width: auto; height: auto; border: none!important; position: absolute; top: -20px; right: -65px; z-index: 1; overflow: visible; opacity: 0.22; display: inline-block;"][tr style="border: none!important"][td style="border: none!important; padding: 0; line-height: 1; transform: rotate(-25deg)"]<img src="https://2img.net/i.imgur.com/D1mUb7O.png" style="width:230px;height:auto;display:block;" alt="D1mUb7O.png" />[/td][/tr][/table][table  style="width: 100%; border: none!important; border-collapse: collapse; position: relative; z-index: 2; RCC - SÓ A VERDADEIRA: transparent; box-sizing: border-box;"][tr style="border: none!important"][td style="border: none!important; padding: clamp(20px, 6vw, 28px) clamp(14px, 4vw, 18px) clamp(14px, 4vw, 18px) clamp(14px, 4vw, 18px); color: #E7DCEA; font-family: 'Nunito', Arial, sans-serif; font-size: clamp(12.5px, 3.2vw, 14px); line-height: 1.7em; text-align: justify; box-sizing: border-box; white-space: nowrap"]<i class="ph ph-user" style="color:#B896C4;font-size:16px;"></i> [b][color=#FFFFFF]${nick}[/color][/b]
+<i class="ti ti-id-badge-2" style="color:#B896C4;font-size:16px;"></i> ${cargo}
+<i class="ph ph-key" style="color:#B896C4;font-size:16px;"></i> ${permissao}
+<i class="ph ph-chat-dots" style="color:#B896C4;font-size:16px;"></i> ${motivo}
+<i class="ph ph-calendar-blank" style="color:#B896C4;font-size:16px;"></i> ${data}[/td][/tr][/table][/td][/tr][/table][table  style="width: auto; border: none!important; border-radius: 20px; overflow: hidden; position: absolute; top: -14px; left: 16px; z-index: 5;" bgcolor="#A22CA9"][tr style="border: none!important"][td style="border: none!important; padding: 6px 16px 6px 12px; white-space: nowrap; vertical-align: middle; font-family: 'Syne', sans-serif;"][size=14][color=#FFFFFF]<i class="ph-fill ph-sign-out"></i> [b]SAÍDA[/b][/color][/size][/td][/tr][/table][/td][/tr][/table]`;
     }
 
-    if (titulo === "SAÍDA") {
-        codigo += `[color=${cor}][b]☒[/b][/color] Li e concordo com as normas de saída, sendo que caso o meu tempo na companhia seja inferior a 30 dias e superior a 14 dias, receberei 50 medalhas efetivas negativas por saída precoce.\n`;
+    if (tituloUpper === "EXPULSÃO" || tituloUpper === "EXPULSAO") {
+        const cargo = campos["Cargo"] || campos["Cargo atual"] || "";
+        const permissao = campos["Permissão"] || "Conselho da Segurança";
+        return `[table  style="width: max-content; min-width: 420px; max-width: 100%; margin: 10% auto 0 auto; border: none!important; position: relative; border-radius: 14px; box-sizing: border-box;" bgcolor="#2C1830"][tr style="border: none!important"][td style="border: none!important; padding: 0; position: relative; overflow: visible"][table  style="width: 100%; border: none!important; border-radius: 14px; overflow: hidden; position: relative; box-sizing: border-box;" bgcolor="#2C1830"][tr style="border: none!important"][td style="border: none!important; padding: 0; position: relative; overflow: hidden"][table  style="width: auto; height: auto; border: none!important; position: absolute; top: -20px; right: -65px; z-index: 1; overflow: visible; opacity: 0.22; display: inline-block;"][tr style="border: none!important"][td style="border: none!important; padding: 0; line-height: 1; transform: rotate(-25deg)"]<img src="https://2img.net/i.imgur.com/D1mUb7O.png" style="width:230px;height:auto;display:block;" alt="D1mUb7O.png" />[/td][/tr][/table][table  style="width: 100%; border: none!important; border-collapse: collapse; position: relative; z-index: 2; RCC - SÓ A VERDADEIRA: transparent; box-sizing: border-box;"][tr style="border: none!important"][td style="border: none!important; padding: clamp(20px, 6vw, 28px) clamp(14px, 4vw, 18px) clamp(14px, 4vw, 18px) clamp(14px, 4vw, 18px); color: #E7DCEA; font-family: 'Nunito', Arial, sans-serif; font-size: clamp(12.5px, 3.2vw, 14px); line-height: 1.7em; text-align: justify; box-sizing: border-box; white-space: nowrap"]<i class="ph ph-user" style="color:#B896C4;font-size:16px;"></i> [b][color=#FFFFFF]${nick}[/color][/b]
+<i class="ti ti-id-badge-2" style="color:#B896C4;font-size:16px;"></i> ${cargo}
+<i class="ph ph-key" style="color:#B896C4;font-size:16px;"></i> ${permissao}
+<i class="ph ph-chat-dots" style="color:#B896C4;font-size:16px;"></i> ${motivo}
+<i class="ph ph-calendar-blank" style="color:#B896C4;font-size:16px;"></i> ${data}[/td][/tr][/table][/td][/tr][/table][table  style="width: auto; border: none!important; border-radius: 20px; overflow: hidden; position: absolute; top: -14px; left: 16px; z-index: 5;" bgcolor="#A22CA9"][tr style="border: none!important"][td style="border: none!important; padding: 6px 16px 6px 12px; white-space: nowrap; vertical-align: middle; font-family: 'Syne', sans-serif;"][size=14][color=#FFFFFF]<i class="ph-fill ph-user-minus"></i> [b]EXPULSÃO[/b][/color][/size][/td][/tr][/table][/td][/tr][/table]`;
     }
 
-    codigo += `[/size][/font][/left]`;
-    return codigo;
+    if (tituloUpper.startsWith("REBAIXAMENTO")) {
+        const cargoAtual = campos["Cargo atual"] || campos["Cargo"] || "";
+        const novoCargo = campos["Novo cargo"];
+        const cargoTexto = novoCargo ? `${cargoAtual} [color=#8C6B94]›[/color] ${novoCargo}` : cargoAtual;
+        return `[table  style="width: max-content; min-width: 420px; max-width: 100%; margin: 10% auto 0 auto; border: none!important; position: relative; border-radius: 14px; box-sizing: border-box;" bgcolor="#2C1830"][tr style="border: none!important"][td style="border: none!important; padding: 0; position: relative; overflow: visible"][table  style="width: 100%; border: none!important; border-radius: 14px; overflow: hidden; position: relative; box-sizing: border-box;" bgcolor="#2C1830"][tr style="border: none!important"][td style="border: none!important; padding: 0; position: relative; overflow: hidden"][table  style="width: auto; height: auto; border: none!important; position: absolute; top: -20px; right: -65px; z-index: 1; overflow: visible; opacity: 0.22; display: inline-block;"][tr style="border: none!important"][td style="border: none!important; padding: 0; line-height: 1; transform: rotate(-25deg)"]<img src="https://2img.net/i.imgur.com/D1mUb7O.png" style="width:230px;height:auto;display:block;" alt="D1mUb7O.png" />[/td][/tr][/table][table  style="width: 100%; border: none!important; border-collapse: collapse; position: relative; z-index: 2; RCC - SÓ A VERDADEIRA: transparent; box-sizing: border-box;"][tr style="border: none!important"][td style="border: none!important; padding: clamp(20px, 6vw, 28px) clamp(14px, 4vw, 18px) clamp(14px, 4vw, 18px) clamp(14px, 4vw, 18px); color: #E7DCEA; font-family: 'Nunito', Arial, sans-serif; font-size: clamp(12.5px, 3.2vw, 14px); line-height: 1.7em; text-align: justify; box-sizing: border-box; white-space: nowrap"]<i class="ph ph-user" style="color:#B896C4;font-size:16px;"></i> [b][color=#FFFFFF]${nick}[/color][/b]
+<i class="ti ti-id-badge-2" style="color:#B896C4;font-size:16px;"></i> ${cargoTexto}
+<i class="ph ph-chat-dots" style="color:#B896C4;font-size:16px;"></i> ${motivo}
+<i class="ph ph-calendar-blank" style="color:#B896C4;font-size:16px;"></i> ${data}[/td][/tr][/table][/td][/tr][/table][table  style="width: auto; border: none!important; border-radius: 20px; overflow: hidden; position: absolute; top: -14px; left: 16px; z-index: 5;" bgcolor="#A22CA9"][tr style="border: none!important"][td style="border: none!important; padding: 6px 16px 6px 12px; white-space: nowrap; vertical-align: middle; font-family: 'Syne', sans-serif;"][size=14][color=#FFFFFF]<i class="ph-fill ph-trend-down"></i> [b]REBAIXAMENTO[/b][/color][/size][/td][/tr][/table][/td][/tr][/table]`;
+    }
+
+    return '';
 }
 
 function criarBBCodeMedalha(tipo, nickMembro, motivo, nickResponsavel, cargoAlvo) {
@@ -2231,7 +2242,7 @@ function criarBBCodeMedalha(tipo, nickMembro, motivo, nickResponsavel, cargoAlvo
 
 function agruparMembros(lista, tipoModal) {
     const grupos = {};
-    const hoje = new Date().toLocaleDateString('pt-BR');
+    const hoje = obterDataMedalha();
 
     lista.forEach((m, idx) => {
         let dadosAcao = { nome: '', novoCargo: null, tipo: null };
@@ -2289,7 +2300,7 @@ function agruparMembros(lista, tipoModal) {
 
 function agruparMembrosComIdx(lista, tipoModal) {
     const grupos = {};
-    const hoje = new Date().toLocaleDateString('pt-BR');
+    const hoje = obterDataMedalha();
 
     lista.forEach(m => {
         const idx = m._idx;
@@ -2357,7 +2368,7 @@ function abrirModal(tipo) {
         painelModal.classList.add('scale-100', 'opacity-100');
     }, 10);
 
-    const hoje = new Date().toLocaleDateString('pt-BR');
+    const hoje = obterDataMedalha();
     let conteudoHTML = '';
     let listaFonte = [];
     let prefixoId = '';
