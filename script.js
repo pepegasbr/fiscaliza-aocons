@@ -2618,7 +2618,7 @@ function confirmarERedirecionar() {
     if (topicoRedirecionamento === 'mp') {
         window.open('https://www.policiarcc.com/privmsg?folder=outbox', '_blank');
     } else if (topicoRedirecionamento) {
-        window.open(`https://www.policiarcc.com/t${topicoRedirecionamento}-`, '_blank');
+        window.open(`https://www.policiarcc.com/t${topicoRedirecionamento}-?view=newest`, '_blank');
     }
     fecharModalConfirmacao();
 }
@@ -2861,7 +2861,7 @@ function abrirModalVerificacao(topicoOuMP, bbcode) {
     const modal = document.getElementById('modal-verificacao-postagem');
     const fundo = document.getElementById('fundo-verificacao-postagem');
     const painel = document.getElementById('painel-verificacao-postagem');
-    const link = topicoOuMP === 'mp' ? 'https://www.policiarcc.com/privmsg?folder=outbox' : `https://www.policiarcc.com/t${topicoOuMP}-`;
+    const link = topicoOuMP === 'mp' ? 'https://www.policiarcc.com/privmsg?folder=outbox' : `https://www.policiarcc.com/t${topicoOuMP}-?view=newest`;
 
     document.getElementById('bbcode-erro-copia').innerText = bbcode;
     document.getElementById('conteudo-verificacao-normal').classList.remove('hidden');
