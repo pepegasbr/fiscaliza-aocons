@@ -2441,7 +2441,7 @@ function abrirModal(tipo) {
                             <div class="flex flex-col md:flex-row gap-3">
                                 <button class="btn ${todosReqFeitos ? 'bg-green-600' : 'bg-purple-600 hover:bg-purple-700'} text-white flex-1 py-3 rounded-xl text-sm font-bold flex items-center justify-center gap-2 shadow-lg shadow-purple-500/20"
                                     ${todosReqFeitos ? 'disabled' : ''}
-                                    onclick="postarAcao(this, '${encodeURIComponent(bbcodeLote)}', '${ID_TOPICO_FORUM}', '${idsReq}')">
+                                    onclick="postarAcao(this, '${encodeURIComponent(bbcodeLote).replace(/'/g, '%27')}', '${ID_TOPICO_FORUM}', '${idsReq}')">
                                     <i class="fa-solid ${todosReqFeitos ? 'fa-check' : 'fa-file-signature'}"></i> ${todosReqFeitos ? 'Requerimentos Postados' : 'Postar Requerimentos'}
                                 </button>
                                 ${g.tipoAcao && g.tipoAcao !== 'saida' ? `
@@ -2490,7 +2490,7 @@ function abrirModal(tipo) {
 }
 
     const gerarItem = (m, titulo, bbcode, tipoAcao, motivo, motivoReq, chkId, medalChkId, tipoModal) => {
-        const bbCodificado = encodeURIComponent(bbcode);
+        const bbCodificado = encodeURIComponent(bbcode).replace(/'/g, '%27');
 
         const reqFeito = document.getElementById(chkId)?.checked;
         const medalFeita = document.getElementById(medalChkId)?.checked;
