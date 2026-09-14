@@ -81,6 +81,14 @@
 
     const CANAL_SINCRONIZACAO = 'rcc_fiscalizacao_sync';
     const CHAVE_STORAGE = 'rcc_fiscalizacao_grupos_cache';
+    let canalSincronizacaoGlobal = null;
+
+    function fecharCanalSincronizacao() {
+        if (canalSincronizacaoGlobal) {
+            try { canalSincronizacaoGlobal.close(); } catch (e) { }
+            canalSincronizacaoGlobal = null;
+        }
+    }
 
     /**
      * Obtém a origem segura do fórum (mesmo domínio quando no navegador)
@@ -700,17 +708,18 @@
     /**
      * =========================================================================
      * INTEGRAÇÃO COM A INTERFACE VISUAL (DOM)
-     * Monta os botões "Puxar do Fórum" e o botão mestre "Sincronizar Grupos"
+     * Monta o painel e botão mestre "Sincronizar Grupos" no topo dos subfóruns
      * =========================================================================
      */
     function integrarInterfaceFiscalizacao() {
         if (typeof document === 'undefined') return;
 
         // Escuta mensagens de outras abas via BroadcastChannel
-        if (typeof BroadcastChannel !== 'undefined') {
+        if (typeof BroadcastChannel !== 'undefined' && !canalSincronizacaoGlobal) {
             try {
-                const canal = new BroadcastChannel(CANAL_SINCRONIZACAO);
-                canal.onmessage = (evento) => {
+                canalSincronizacaoGlobal = new BroadcastChannel(CANAL_SINCRONIZACAO);
+                canalSincronizacaoGlobal.onmessage = (evento) => {
+                    if (typeof document === 'undefined') return;
                     if (evento.data && evento.data.tipo === 'SINCRONIZACAO_CONCLUIDA' && evento.data.resultados) {
                         const res = evento.data.resultados;
                         let preencheu = false;
@@ -729,7 +738,7 @@
                             document.getElementById('lista-forum-graduadores').dispatchEvent(new Event('input', { bubbles: true }));
                             preencheu = true;
                         }
-                        if (preencheu && typeof window.showToast === 'function') {
+                        if (preencheu && typeof window !== 'undefined' && typeof window.showToast === 'function') {
                             window.showToast('Grupos sincronizados automaticamente a partir da outra aba do fórum!', 'success');
                         }
                     }
@@ -744,6 +753,17 @@
         // Se os campos da ferramenta de fiscalização existem na página
         if (campoProfessores && campoCoordenadores && campoGraduadores) {
             montarBotoesNaFiscalizacao();
+
+            // Sincronização automática ao abrir a ferramenta no fórum (se os campos estiverem vazios)
+            if (typeof window !== 'undefined' && window.location && window.location.hostname && window.location.hostname.includes('policiarcc.com')) {
+                const camposVazios = !campoProfessores.value.trim() && !campoCoordenadores.value.trim() && !campoGraduadores.value.trim();
+                if (camposVazios) {
+                    const restaurou = restaurarCacheSeDisponivel();
+                    if (!restaurou) {
+                        executarSincronizacaoCompleta();
+                    }
+                }
+            }
         } else {
             // Se estiver em outra página do fórum (ex: navegando normalmente em policiarcc.com)
             montarWidgetFlutuanteNoForum();
@@ -751,7 +771,7 @@
     }
 
     /**
-     * Monta o painel de sincronização no topo dos subfóruns e botões individuais em cada card
+     * Monta o painel de sincronização no topo dos subfóruns
      */
     function montarBotoesNaFiscalizacao() {
         // Evita inserção duplicada
@@ -800,7 +820,9 @@
                 </div>
             `;
 
-            gridSubforuns.parentNode.insertBefore(barraSincronizacao, gridSubforuns);
+            if (gridSubforuns.parentNode) {
+                gridSubforuns.parentNode.insertBefore(barraSincronizacao, gridSubforuns);
+            }
 
             const botaoSync = document.getElementById('btn-sync-todos-grupos');
             if (botaoSync) {
@@ -821,67 +843,6 @@
                 });
             }
         }
-
-        // Adiciona botões individuais "Puxar" em cada card
-        adicionarBotaoIndividual('professores', 'lista-forum-professores');
-        adicionarBotaoIndividual('coordenadores', 'lista-forum-coordenadores');
-        adicionarBotaoIndividual('graduadores', 'lista-forum-graduadores');
-    }
-
-    /**
-     * Adiciona botão individual de puxar no cabeçalho de cada card de subfórum
-     */
-    function adicionarBotaoIndividual(chave, textareaId) {
-        const textarea = document.getElementById(textareaId);
-        if (!textarea) return;
-
-        const card = textarea.closest('.card-standard') || textarea.parentElement;
-        const linkForum = card.querySelector('a[href*="/g"]');
-        if (!linkForum || card.querySelector(`.btn-puxar-individual-${chave}`)) return;
-
-        const containerBotoes = linkForum.parentElement;
-        if (!containerBotoes) return;
-
-        const config = CONFIG_GRUPOS[chave];
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = `btn-puxar-individual-${chave} mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold text-white bg-slate-700/60 hover:bg-purple-600 dark:bg-slate-800/80 dark:hover:bg-purple-600 border border-slate-600/40 hover:border-purple-500/50 shadow-sm transition-all`;
-        btn.innerHTML = `<i class="fa-solid fa-cloud-arrow-down text-[10px]"></i> Puxar ${config.nome}`;
-        btn.title = `Busca automaticamente os membros do grupo ${config.nome} (inclusive se houver várias páginas)`;
-
-        btn.addEventListener('click', async () => {
-            const originalHtml = btn.innerHTML;
-            btn.disabled = true;
-            btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin text-[10px]"></i> Buscando...`;
-
-            try {
-                const resultado = await buscarTodosMembrosDoGrupo(config, {
-                    onProgress: prog => {
-                        btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin text-[10px]"></i> Pág. ${prog.paginaAtual || 1}`;
-                    }
-                });
-
-                textarea.value = resultado.textoFormatado;
-                textarea.dispatchEvent(new Event('input', { bubbles: true }));
-                textarea.dispatchEvent(new Event('change', { bubbles: true }));
-
-                btn.innerHTML = `<i class="fa-solid fa-check text-emerald-400"></i> ${resultado.totalMembros} membros`;
-                setTimeout(() => {
-                    btn.disabled = false;
-                    btn.innerHTML = originalHtml;
-                }, 3000);
-
-                if (typeof window.showToast === 'function') {
-                    window.showToast(`${config.nome}: ${resultado.totalMembros} membros importados (${resultado.paginasConsultadas} pág).`, 'success');
-                }
-            } catch (erro) {
-                lidarComErroSincronizacao(erro);
-                btn.disabled = false;
-                btn.innerHTML = originalHtml;
-            }
-        });
-
-        containerBotoes.appendChild(btn);
     }
 
     /**
@@ -892,9 +853,7 @@
         const icone = document.getElementById('icone-sync-todos');
         const texto = document.getElementById('texto-sync-todos');
 
-        if (!botao) return;
-
-        botao.disabled = true;
+        if (botao) botao.disabled = true;
         if (icone) icone.className = 'fa-solid fa-spinner fa-spin';
 
         try {
@@ -919,21 +878,23 @@
             if (icone) icone.className = 'fa-solid fa-circle-check text-emerald-300';
             if (texto) texto.textContent = `Sincronizado (${total} membros)`;
 
-            if (typeof window.showToast === 'function') {
+            if (typeof window !== 'undefined' && typeof window.showToast === 'function') {
                 window.showToast(`Sucesso! ${total} membros importados dos 3 subfóruns.`, 'success');
             }
 
             setTimeout(() => {
-                botao.disabled = false;
+                if (botao) botao.disabled = false;
                 if (icone) icone.className = 'fa-solid fa-rotate';
                 if (texto) texto.textContent = 'Sincronizar Grupos do Fórum';
             }, 4000);
 
+            return resultados;
         } catch (erro) {
             lidarComErroSincronizacao(erro);
-            botao.disabled = false;
+            if (botao) botao.disabled = false;
             if (icone) icone.className = 'fa-solid fa-rotate';
             if (texto) texto.textContent = 'Sincronizar Grupos do Fórum';
+            throw erro;
         }
     }
 
@@ -943,24 +904,28 @@
     function lidarComErroSincronizacao(erro) {
         console.error('[ParserGruposForum] Erro:', erro);
 
-        if (erro.tipo === 'AUTENTICACAO_NECESSARIA' || erro.message.includes('autenticado')) {
-            if (typeof window.showToast === 'function') {
+        if (erro.tipo === 'AUTENTICACAO_NECESSARIA' || (erro.message && erro.message.includes('autenticado'))) {
+            if (typeof window !== 'undefined' && typeof window.showToast === 'function') {
                 window.showToast('Faça login no fórum da RCC para que os grupos possam ser consultados.', 'error');
-            } else {
+            } else if (typeof alert === 'function') {
                 alert('Faça login no fórum da RCC para que os grupos possam ser consultados.');
+            } else {
+                console.error('[ParserGruposForum] Faça login no fórum da RCC para que os grupos possam ser consultados.');
             }
             return;
         }
 
-        if (erro.tipo === 'CORS_OU_ORIGEM' || erro.message.includes('CORS')) {
+        if (erro.tipo === 'CORS_OU_ORIGEM' || (erro.message && erro.message.includes('CORS'))) {
             exibirModalInstrucoesCors();
             return;
         }
 
-        if (typeof window.showToast === 'function') {
+        if (typeof window !== 'undefined' && typeof window.showToast === 'function') {
             window.showToast(`Erro ao sincronizar grupos: ${erro.message}`, 'error');
-        } else {
+        } else if (typeof alert === 'function') {
             alert(`Erro ao sincronizar grupos: ${erro.message}`);
+        } else {
+            console.error(`[ParserGruposForum] Erro ao sincronizar grupos: ${erro.message}`);
         }
     }
 
@@ -968,6 +933,7 @@
      * Exibe modal amigável quando o usuário testa fora de policiarcc.com e encontra bloqueio de CORS
      */
     function exibirModalInstrucoesCors() {
+        if (typeof document === 'undefined') return;
         const modalExistente = document.getElementById('modal-instrucoes-parser-cors');
         if (modalExistente) modalExistente.remove();
 
@@ -1001,7 +967,7 @@
                     </button>
                 </div>
                 <div class="flex justify-end">
-                    <button type="button" onclick="document.getElementById('modal-instrucoes-parser-cors').remove()" class="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-300">
+                    <button type="button" id="btn-fechar-modal-cors" class="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-300">
                         Entendi
                     </button>
                 </div>
@@ -1011,6 +977,11 @@
         const containerAlvo = document.body || document.documentElement;
         if (containerAlvo && typeof containerAlvo.appendChild === 'function') {
             containerAlvo.appendChild(modal);
+        }
+
+        const btnFechar = document.getElementById('btn-fechar-modal-cors');
+        if (btnFechar) {
+            btnFechar.addEventListener('click', () => modal.remove());
         }
 
         const btnCopiar = document.getElementById('btn-copiar-bookmarklet');
@@ -1188,6 +1159,7 @@
         extrairLinksDePaginacao,
         buscarTodosMembrosDoGrupo,
         sincronizarTodosOsGrupos,
+        executarSincronizacaoCompleta,
         preencherCamposFiscalizacao,
         copiarParaAreaDeTransferencia,
         copiarGrupoParaTransferencia,
@@ -1196,6 +1168,7 @@
         carregarCacheGrupos,
         restaurarCacheSeDisponivel,
         identificarGrupoDaPaginaAtual,
-        obterOrigemForum
+        obterOrigemForum,
+        fecharCanalSincronizacao
     };
 }));
