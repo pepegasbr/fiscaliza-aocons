@@ -915,7 +915,7 @@
         if (textoStatus) {
             if (dados.total > 0) {
                 const tipoTexto = ehAoVivo ? 'sincronizados' : 'carregados';
-                textoStatus.innerHTML = `<span class="inline-block w-2 h-2 rounded-full bg-emerald-500 mr-1.5"></span> Subfóruns ${tipoTexto} automaticamente (${dados.total} membros)`;
+                textoStatus.innerHTML = `<span class="inline-block w-2 h-2 rounded-full bg-emerald-500 mr-1.5"></span> Subfóruns: ${tipoTexto} (${dados.total} membros)`;
             } else {
                 textoStatus.innerHTML = `<span class="inline-block w-2 h-2 rounded-full bg-slate-400 mr-1.5"></span> Subfóruns: aguardando importação`;
             }
@@ -1118,6 +1118,44 @@
     function configurarControlesFiscalizacao() {
         if (typeof document === 'undefined' || controlesConfigurados) return;
         controlesConfigurados = true;
+
+        // Garante que a barra de ações e o status fiquem sempre em linha única (sem quebra)
+        const statusElem = document.getElementById('status-sincronizacao-forum');
+        const barraAcoes = statusElem ? statusElem.parentElement : null;
+        if (barraAcoes) {
+            barraAcoes.classList.remove('flex-wrap');
+            barraAcoes.classList.add('flex-nowrap');
+            if (barraAcoes.style) barraAcoes.style.flexWrap = 'nowrap';
+        }
+        if (statusElem && statusElem.style) {
+            statusElem.style.whiteSpace = 'nowrap';
+            statusElem.style.overflow = 'hidden';
+            statusElem.style.textOverflow = 'ellipsis';
+            statusElem.style.minWidth = '0';
+        }
+        const containerBotoes = statusElem ? statusElem.nextElementSibling : null;
+        if (containerBotoes) {
+            containerBotoes.classList.add('shrink-0');
+            if (containerBotoes.style) containerBotoes.style.flexShrink = '0';
+        }
+
+        if (typeof document !== 'undefined' && document.head && !document.getElementById('estilo-parser-linha-unica')) {
+            const estilo = document.createElement('style');
+            estilo.id = 'estilo-parser-linha-unica';
+            estilo.textContent = `
+                #status-sincronizacao-forum {
+                    white-space: nowrap !important;
+                    overflow: hidden !important;
+                    text-overflow: ellipsis !important;
+                    min-width: 0 !important;
+                }
+                #status-sincronizacao-forum + div,
+                #status-sincronizacao-forum ~ div {
+                    flex-shrink: 0 !important;
+                }
+            `;
+            document.head.appendChild(estilo);
+        }
 
         const btnToggleManual = document.getElementById('btn-toggle-edicao-manual');
         if (btnToggleManual) {
