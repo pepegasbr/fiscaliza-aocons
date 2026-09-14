@@ -820,11 +820,36 @@ function extrairNicksDoSubforum(texto) {
     const nicks = new Map();
 
     texto.split(/\r?\n/).forEach(linha => {
-        if (!linha.includes('Enviar uma mensagem privada')) return;
-        const partes = linha.split('\t');
-        const nick = partes[1] ? partes[1].trim() : '';
+        linha = linha.trim();
+        if (!linha) return;
+
+        let nick = '';
+        if (linha.includes('Enviar uma mensagem privada')) {
+            const partes = linha.split('\t');
+            if (partes.length >= 2 && partes[1].trim()) {
+                nick = partes[1].trim();
+            } else {
+                const match = linha.match(/^\d+[\s\t]+([^\t\n]+?)(?:[\s\t]+Enviar uma mensagem privada|\s*$)/i);
+                nick = match && match[1] ? match[1].trim() : '';
+            }
+        } else if (linha.includes('\t')) {
+            const partes = linha.split('\t');
+            if (/^\d+$/.test(partes[0].trim()) && partes[1]) {
+                nick = partes[1].trim();
+            } else if (partes[0]) {
+                nick = partes[0].trim();
+            }
+        } else {
+            const matchNum = linha.match(/^(?:\d+[\.\)\s-]+)?(.+)$/);
+            nick = matchNum && matchNum[1] ? matchNum[1].trim() : linha;
+        }
+
         const nickNormalizado = normalizarNick(nick);
-        if (nickNormalizado.length >= 2 && !nicks.has(nickNormalizado)) {
+        const ehIgnorado = typeof CONTAS_FORUM_IGNORADAS !== 'undefined'
+            ? CONTAS_FORUM_IGNORADAS.has(nickNormalizado)
+            : false;
+
+        if (nickNormalizado.length >= 2 && !ehIgnorado && !nicks.has(nickNormalizado)) {
             nicks.set(nickNormalizado, nick);
         }
     });
@@ -875,6 +900,10 @@ function atualizarEstadoDasFontes() {
     .forEach(id => document.getElementById(id)?.addEventListener('input', atualizarEstadoDasFontes));
 
 atualizarEstadoDasFontes();
+
+window.atualizarEstadoDasFontes = atualizarEstadoDasFontes;
+window.extrairNicksDoSubforum = extrairNicksDoSubforum;
+window.extrairNicksDaListagemMembros = extrairNicksDaListagemMembros;
 
 function converterDataPlanilha(dataStr) {
     if (!dataStr) return null;
@@ -933,10 +962,42 @@ botaoVerificar.addEventListener('click', () => {
 
     if (!textoSystem.trim()) return showToast('Por favor, cole a lista do System primeiro.', 'error');
     if (extrairNicksDaListagemMembros(textoSystem).length === 0) {
-        return showToast('Nenhum policial foi reconhecido na lista do System. Copie novamente pelo botao da listagem.', 'error');
+        return showToast('Nenhum policial foi reconhecido na lista do System. Copie novamente pelo botão da listagem.', 'error');
     }
     if (!textoForumProfessores.trim() || !textoForumCoordenadores.trim() || !textoForumGraduadores.trim()) {
-        return showToast('Por favor, cole as listas dos 3 subfóruns (Professores, Coordenadores e Graduadores).', 'error');
+        if (typeof ParserGruposForum !== 'undefined' && typeof ParserGruposForum.obterPromessaSincronizacao === 'function') {
+            const promessa = ParserGruposForum.obterPromessaSincronizacao();
+            if (promessa) {
+                showToast('Aguarde um instante: finalizando sincronização dos subfóruns...', 'info');
+                botaoVerificar.disabled = true;
+                promessa.then(() => {
+                    botaoVerificar.disabled = false;
+                    const prof = document.getElementById('lista-forum-professores')?.value;
+                    const coord = document.getElementById('lista-forum-coordenadores')?.value;
+                    const grad = document.getElementById('lista-forum-graduadores')?.value;
+                    if (prof?.trim() && coord?.trim() && grad?.trim()) {
+                        abrirModalVerificador();
+                    } else {
+                        if (typeof ParserGruposForum.alternarContainerManual === 'function') {
+                            ParserGruposForum.alternarContainerManual(true);
+                        }
+                        showToast('Não foi possível sincronizar todos os subfóruns. Cole as listas manualmente nos campos abaixo.', 'error');
+                    }
+                }).catch(() => {
+                    botaoVerificar.disabled = false;
+                    if (typeof ParserGruposForum.alternarContainerManual === 'function') {
+                        ParserGruposForum.alternarContainerManual(true);
+                    }
+                    showToast('Falha na sincronização dos grupos. Cole as listas manualmente nos campos abaixo.', 'error');
+                });
+                return;
+            }
+        }
+
+        if (typeof ParserGruposForum !== 'undefined' && typeof ParserGruposForum.alternarContainerManual === 'function') {
+            ParserGruposForum.alternarContainerManual(true);
+        }
+        return showToast('Por favor, cole as listas dos 3 subfóruns nos campos abertos abaixo.', 'error');
     }
 
     abrirModalVerificador();
@@ -1183,6 +1244,8 @@ async function iniciarVerificacao(modo) {
         showToast('Erro na verificação: ' + erro.message, 'error');
     }
 }
+
+window.iniciarVerificacao = iniciarVerificacao;
 
 function extrairNicksExtrasForum(dadosSubforuns, mapaMembrosOficiais) {
 
