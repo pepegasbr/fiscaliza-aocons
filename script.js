@@ -1283,8 +1283,7 @@ function extrairNicksExtrasForum(dadosSubforuns, mapaMembrosOficiais) {
 
                             temPermissao = (nivel === 3) || (nivel >= 5);
                         } else if (nomeSubforum === 'graduadores') {
-
-                            temPermissao = (nivel === 4) || (nivel >= 5);
+                            temPermissao = (nivel === 4) || (nivel >= 7);
                         }
                     }
 
