@@ -512,30 +512,37 @@
         return resultados;
     }
 
+    let preenchendoProgramaticamente = false;
+
     /**
      * Preenche os campos textareas na interface da fiscalização e dispara os eventos de input
      */
     function preencherCamposFiscalizacao(resultados) {
         if (typeof document === 'undefined') return 0;
         let preenchidos = 0;
+        preenchendoProgramaticamente = true;
 
-        Object.keys(CONFIG_GRUPOS).forEach(chave => {
-            const config = CONFIG_GRUPOS[chave];
-            const resultado = resultados[chave];
-            if (!resultado) return;
+        try {
+            Object.keys(CONFIG_GRUPOS).forEach(chave => {
+                const config = CONFIG_GRUPOS[chave];
+                const resultado = resultados[chave];
+                if (!resultado) return;
 
-            const textarea = document.getElementById(config.textareaId);
-            if (textarea) {
-                textarea.value = resultado.textoFormatado;
-                textarea.dispatchEvent(new Event('input', { bubbles: true }));
-                textarea.dispatchEvent(new Event('change', { bubbles: true }));
-                preenchidos++;
+                const textarea = document.getElementById(config.textareaId);
+                if (textarea) {
+                    textarea.value = resultado.textoFormatado;
+                    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+                    textarea.dispatchEvent(new Event('change', { bubbles: true }));
+                    preenchidos++;
+                }
+            });
+
+            // Atualiza contadores globais se a função existir
+            if (typeof window.atualizarEstadoDasFontes === 'function') {
+                window.atualizarEstadoDasFontes();
             }
-        });
-
-        // Atualiza contadores globais se a função existir
-        if (typeof window.atualizarEstadoDasFontes === 'function') {
-            window.atualizarEstadoDasFontes();
+        } finally {
+            preenchendoProgramaticamente = false;
         }
 
         return preenchidos;
@@ -752,16 +759,31 @@
 
         // Se os campos da ferramenta de fiscalização existem na página
         if (campoProfessores && campoCoordenadores && campoGraduadores) {
-            montarBotoesNaFiscalizacao();
+            // Remove qualquer resquício do banner antigo se presente
+            const painelAntigo = document.getElementById('painel-sincronizacao-forum');
+            if (painelAntigo) painelAntigo.remove();
 
-            // Sincronização automática ao abrir a ferramenta no fórum (se os campos estiverem vazios)
-            if (typeof window !== 'undefined' && window.location && window.location.hostname && window.location.hostname.includes('policiarcc.com')) {
-                const camposVazios = !campoProfessores.value.trim() && !campoCoordenadores.value.trim() && !campoGraduadores.value.trim();
-                if (camposVazios) {
-                    const restaurou = restaurarCacheSeDisponivel();
-                    if (!restaurou) {
-                        executarSincronizacaoCompleta();
-                    }
+            configurarControlesFiscalizacao();
+
+            const camposTinhamDados = Boolean(
+                campoProfessores.value.trim() ||
+                campoCoordenadores.value.trim() ||
+                campoGraduadores.value.trim()
+            );
+
+            // 1. Restauração imediata de cache caso os campos estejam vazios (0 atrito)
+            if (!camposTinhamDados) {
+                restaurarCacheSeDisponivel();
+            }
+
+            atualizarIndicadorStatusEBadge();
+
+            // 2. Auto-importação imediata e transparente ao vivo no domínio do fórum
+            if (typeof window !== 'undefined' && window.location && window.location.hostname && window.location.hostname.includes('policiarcc.com') && typeof window.fetch === 'function') {
+                if (!camposTinhamDados) {
+                    executarSincronizacaoSilenciosa().catch(erro => {
+                        console.warn('[ParserGruposForum] Auto-sincronização em segundo plano:', erro);
+                    });
                 }
             }
         } else {
@@ -770,130 +792,581 @@
         }
     }
 
+    let usuarioEditouManualmente = false;
+    let abaModalAtiva = 'todos';
+    let filtroTextoModal = '';
+    let controlesConfigurados = false;
+
     /**
-     * Monta o painel de sincronização no topo dos subfóruns
+     * Extrai nicks de um texto de subfórum no formato da ferramenta
      */
-    function montarBotoesNaFiscalizacao() {
-        // Evita inserção duplicada
-        if (document.getElementById('painel-sincronizacao-forum')) return;
-
-        // Procura o container dos subfóruns para injetar a barra de sincronização
-        const textareaProfessores = document.getElementById('lista-forum-professores');
-        if (!textareaProfessores) return;
-
-        const cardProfessores = textareaProfessores.closest('.card-standard') || textareaProfessores.parentElement;
-        const gridSubforuns = cardProfessores.parentElement;
-
-        if (gridSubforuns) {
-            const barraSincronizacao = document.createElement('div');
-            barraSincronizacao.id = 'painel-sincronizacao-forum';
-            barraSincronizacao.className = 'w-full mb-6 p-4 rounded-2xl bg-gradient-to-r from-purple-900/40 via-indigo-900/30 to-slate-900/40 border border-purple-500/30 shadow-lg backdrop-blur-md flex flex-col md:flex-row items-center justify-between gap-4 animate-fade-in';
-            
-            const cacheDisponivel = carregarCacheGrupos();
-            const botaoCacheHtml = cacheDisponivel ? `
-                <button type="button" id="btn-restaurar-cache-grupos" class="px-3 py-2 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-300 font-semibold text-xs border border-slate-700 flex items-center gap-1.5 transition-all" title="Restaura os membros obtidos na última consulta salva">
-                    <i class="fa-solid fa-clock-rotate-left text-purple-400"></i> Restaurar Cache
-                </button>
-            ` : '';
-
-            barraSincronizacao.innerHTML = `
-                <div class="flex items-center gap-3">
-                    <div class="w-12 h-12 rounded-xl bg-purple-500/20 text-purple-400 flex items-center justify-center text-2xl shadow-inner shrink-0">
-                        <i class="fa-solid fa-bolt-lightning text-purple-400"></i>
-                    </div>
-                    <div>
-                        <div class="flex items-center gap-2">
-                            <h4 class="text-sm font-bold text-slate-800 dark:text-slate-100">Integração Direta com os Subfóruns</h4>
-                            <span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-400 border border-purple-500/30 uppercase tracking-wider">Automático</span>
-                        </div>
-                        <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                            Puxa todos os membros de Professores, Coordenadores e Graduadores de todas as páginas com 1 clique.
-                        </p>
-                    </div>
-                </div>
-                <div class="flex items-center gap-2 w-full md:w-auto justify-end">
-                    ${botaoCacheHtml}
-                    <button type="button" id="btn-sync-todos-grupos" class="w-full md:w-auto px-4 py-2.5 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-bold text-xs shadow-md shadow-purple-900/20 flex items-center justify-center gap-2 transition-all hover:scale-[1.02] active:scale-[0.98]">
-                        <i class="fa-solid fa-rotate" id="icone-sync-todos"></i>
-                        <span id="texto-sync-todos">Sincronizar Grupos do Fórum</span>
-                    </button>
-                </div>
-            `;
-
-            if (gridSubforuns.parentNode) {
-                gridSubforuns.parentNode.insertBefore(barraSincronizacao, gridSubforuns);
+    function extrairNicksDeTextoSubforum(texto) {
+        if (!texto || typeof texto !== 'string') return [];
+        const linhas = texto.split('\n');
+        const nicks = [];
+        const nicksNormalizados = new Set();
+        for (let linha of linhas) {
+            linha = linha.trim();
+            if (!linha) continue;
+            let candidato = '';
+            if (linha.includes('Enviar uma mensagem privada')) {
+                const partes = linha.split('\t');
+                if (partes.length >= 2 && partes[1].trim()) {
+                    candidato = partes[1].trim();
+                } else {
+                    const match = linha.match(/^\d+[\s\t]+([^\t\n]+?)(?:[\s\t]+Enviar uma mensagem privada|\s*$)/i);
+                    candidato = match && match[1] ? match[1].trim() : linha;
+                }
+            } else if (linha.includes('\t')) {
+                const partes = linha.split('\t');
+                if (/^\d+$/.test(partes[0].trim()) && partes[1]) {
+                    candidato = partes[1].trim();
+                } else {
+                    candidato = partes[0].trim();
+                }
+            } else {
+                const matchNum = linha.match(/^(?:\d+[\.\)\s-]+)?(.+)$/);
+                candidato = matchNum && matchNum[1] ? matchNum[1].trim() : linha;
             }
 
-            const botaoSync = document.getElementById('btn-sync-todos-grupos');
-            if (botaoSync) {
-                botaoSync.addEventListener('click', executarSincronizacaoCompleta);
+            const norm = normalizarNick(candidato);
+            if (norm.length >= 2 && !CONTAS_IGNORADAS.has(norm) && !nicksNormalizados.has(norm)) {
+                const limpo = candidato.replace(/\s*Enviar uma mensagem privada\s*$/i, '').trim();
+                nicks.push(limpo);
+                nicksNormalizados.add(norm);
             }
+        }
+        return nicks;
+    }
 
-            const botaoRestaurarCache = document.getElementById('btn-restaurar-cache-grupos');
-            if (botaoRestaurarCache) {
-                botaoRestaurarCache.addEventListener('click', () => {
-                    const sucesso = restaurarCacheSeDisponivel();
-                    if (sucesso) {
-                        botaoRestaurarCache.innerHTML = '<i class="fa-solid fa-check text-emerald-400"></i> Restaurado!';
-                        if (typeof window.showToast === 'function') {
-                            window.showToast('Dados restaurados com sucesso do cache local!', 'success');
-                        }
-                        setTimeout(() => botaoRestaurarCache.remove(), 2500);
-                    }
-                });
+    /**
+     * Retorna os membros carregados atualmente (priorizando textareas e fallback para cache)
+     */
+    function obterMembrosCarregados() {
+        const dados = {
+            professores: [],
+            coordenadores: [],
+            graduadores: [],
+            total: 0
+        };
+
+        const cache = carregarCacheGrupos();
+        if (cache) {
+            if (cache.professores && Array.isArray(cache.professores.membros)) {
+                dados.professores = [...cache.professores.membros];
             }
+            if (cache.coordenadores && Array.isArray(cache.coordenadores.membros)) {
+                dados.coordenadores = [...cache.coordenadores.membros];
+            }
+            if (cache.graduadores && Array.isArray(cache.graduadores.membros)) {
+                dados.graduadores = [...cache.graduadores.membros];
+            }
+        }
+
+        if (typeof document !== 'undefined') {
+            const taProf = document.getElementById('lista-forum-professores');
+            const taCoord = document.getElementById('lista-forum-coordenadores');
+            const taGrad = document.getElementById('lista-forum-graduadores');
+
+            if (taProf && taProf.value.trim()) {
+                const nicks = extrairNicksDeTextoSubforum(taProf.value);
+                if (nicks.length > 0) dados.professores = nicks;
+            }
+            if (taCoord && taCoord.value.trim()) {
+                const nicks = extrairNicksDeTextoSubforum(taCoord.value);
+                if (nicks.length > 0) dados.coordenadores = nicks;
+            }
+            if (taGrad && taGrad.value.trim()) {
+                const nicks = extrairNicksDeTextoSubforum(taGrad.value);
+                if (nicks.length > 0) dados.graduadores = nicks;
+            }
+        }
+
+        dados.total = dados.professores.length + dados.coordenadores.length + dados.graduadores.length;
+        return dados;
+    }
+
+    /**
+     * Atualiza o badge numérico e a mensagem de status da sincronização
+     */
+    function atualizarIndicadorStatusEBadge(resultados, ehAoVivo = false) {
+        if (typeof document === 'undefined') return;
+
+        const dados = resultados ? {
+            professores: resultados.professores?.membros || [],
+            coordenadores: resultados.coordenadores?.membros || [],
+            graduadores: resultados.graduadores?.membros || [],
+            total: (resultados.professores?.totalMembros || 0) +
+                   (resultados.coordenadores?.totalMembros || 0) +
+                   (resultados.graduadores?.totalMembros || 0)
+        } : obterMembrosCarregados();
+
+        const badge = document.getElementById('badge-total-membros-importados');
+        if (badge) {
+            badge.textContent = String(dados.total);
+        }
+
+        const modalBadge = document.getElementById('modal-badge-total');
+        if (modalBadge) {
+            modalBadge.textContent = `${dados.total} membros`;
+        }
+
+        const textoStatus = document.getElementById('texto-status-forum');
+        if (textoStatus) {
+            if (dados.total > 0) {
+                const tipoTexto = ehAoVivo ? 'sincronizados' : 'carregados';
+                textoStatus.innerHTML = `<span class="inline-block w-2 h-2 rounded-full bg-emerald-500 mr-1.5"></span> Subfóruns ${tipoTexto} automaticamente (${dados.total} membros)`;
+            } else {
+                textoStatus.innerHTML = `<span class="inline-block w-2 h-2 rounded-full bg-slate-400 mr-1.5"></span> Subfóruns: aguardando importação`;
+            }
+        }
+
+        const modal = document.getElementById('modal-membros-forum');
+        if (modal && !modal.classList.contains('hidden')) {
+            renderizarListaMembrosModal();
         }
     }
 
     /**
-     * Executa a sincronização completa de todos os 3 grupos com feedback visual no botão principal
+     * Alterna a visibilidade do container de subfóruns manuais
      */
-    async function executarSincronizacaoCompleta() {
-        const botao = document.getElementById('btn-sync-todos-grupos');
-        const icone = document.getElementById('icone-sync-todos');
-        const texto = document.getElementById('texto-sync-todos');
+    function alternarContainerManual(forcar) {
+        if (typeof document === 'undefined') return;
+        const container = document.getElementById('container-subforuns-manual');
+        const btnToggle = document.getElementById('btn-toggle-edicao-manual');
+        const textoToggle = document.getElementById('texto-btn-toggle-manual');
+        const iconeChevron = document.getElementById('icone-chevron-manual');
 
-        if (botao) botao.disabled = true;
-        if (icone) icone.className = 'fa-solid fa-spinner fa-spin';
+        if (!container) return;
+
+        const deveAbrir = typeof forcar === 'boolean' ? forcar : container.classList.contains('hidden');
+
+        if (deveAbrir) {
+            container.classList.remove('hidden');
+            if (textoToggle) textoToggle.textContent = 'Ocultar listas manuais';
+            if (iconeChevron) iconeChevron.classList.add('rotate-180');
+            container.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        } else {
+            container.classList.add('hidden');
+            if (textoToggle) textoToggle.textContent = 'Inserir listas manualmente';
+            if (iconeChevron) iconeChevron.classList.remove('rotate-180');
+        }
+    }
+
+    /**
+     * Obtém a lista de membros filtrada de acordo com a aba e o filtro de busca ativos
+     */
+    function obterItensFiltradosParaExibicao(filtro = filtroTextoModal, grupo = abaModalAtiva) {
+        const dados = obterMembrosCarregados();
+        const filtroNorm = normalizarNick(filtro || '');
+        const itens = [];
+
+        if (grupo === 'todos' || grupo === 'professores') {
+            dados.professores.forEach(nick => {
+                if (!filtroNorm || normalizarNick(nick).includes(filtroNorm)) {
+                    itens.push({ nick, grupo: 'Professores', corBadge: 'purple' });
+                }
+            });
+        }
+        if (grupo === 'todos' || grupo === 'coordenadores') {
+            dados.coordenadores.forEach(nick => {
+                if (!filtroNorm || normalizarNick(nick).includes(filtroNorm)) {
+                    itens.push({ nick, grupo: 'Coordenadores', corBadge: 'pink' });
+                }
+            });
+        }
+        if (grupo === 'todos' || grupo === 'graduadores') {
+            dados.graduadores.forEach(nick => {
+                if (!filtroNorm || normalizarNick(nick).includes(filtroNorm)) {
+                    itens.push({ nick, grupo: 'Graduadores', corBadge: 'indigo' });
+                }
+            });
+        }
+        return itens;
+    }
+
+    /**
+     * Abre o modal de visualização de membros importados do fórum
+     */
+    function abrirModalMembrosForum() {
+        if (typeof document === 'undefined') return;
+        const modal = document.getElementById('modal-membros-forum');
+        if (!modal) return;
+
+        renderizarListaMembrosModal();
+        modal.classList.remove('hidden');
+        if (document.body) {
+            document.body.classList.add('overflow-hidden');
+        }
+
+        const inputFiltro = document.getElementById('filtro-membros-modal');
+        if (inputFiltro) {
+            inputFiltro.value = '';
+            filtroTextoModal = '';
+            setTimeout(() => inputFiltro.focus(), 50);
+        }
+    }
+
+    /**
+     * Fecha o modal de visualização de membros importados
+     */
+    function fecharModalMembrosForum() {
+        if (typeof document === 'undefined') return;
+        const modal = document.getElementById('modal-membros-forum');
+        if (modal) modal.classList.add('hidden');
+        if (document.body) {
+            document.body.classList.remove('overflow-hidden');
+        }
+    }
+
+    /**
+     * Renderiza os membros na lista do modal com suporte a filtro e abas
+     */
+    function renderizarListaMembrosModal(filtro = filtroTextoModal, grupo = abaModalAtiva) {
+        if (typeof document === 'undefined') return;
+        const containerLista = document.getElementById('modal-lista-membros-conteudo');
+        if (!containerLista) return;
+
+        const dados = obterMembrosCarregados();
+
+        const contTodos = document.getElementById('aba-cont-todos');
+        const contProf = document.getElementById('aba-cont-professores');
+        const contCoord = document.getElementById('aba-cont-coordenadores');
+        const contGrad = document.getElementById('aba-cont-graduadores');
+
+        if (contTodos) contTodos.textContent = `(${dados.total})`;
+        if (contProf) contProf.textContent = `(${dados.professores.length})`;
+        if (contCoord) contCoord.textContent = `(${dados.coordenadores.length})`;
+        if (contGrad) contGrad.textContent = `(${dados.graduadores.length})`;
+
+        const itensParaExibir = obterItensFiltradosParaExibicao(filtro, grupo);
+
+        if (itensParaExibir.length === 0) {
+            containerLista.innerHTML = `
+                <div class="text-center py-10">
+                    <div class="w-12 h-12 mx-auto rounded-xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-400 text-xl mb-2">
+                        <i class="fa-solid fa-user-slash"></i>
+                    </div>
+                    <p class="text-xs font-bold text-slate-500 dark:text-slate-400">Nenhum membro encontrado</p>
+                    <p class="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5">
+                        ${filtro ? 'Nenhum nick corresponde ao filtro digitado.' : 'Aguardando sincronização dos subfóruns ou insira as listas manualmente.'}
+                    </p>
+                </div>
+            `;
+            return;
+        }
+
+        const CORES_BADGE = {
+            purple: {
+                bg: 'bg-purple-500/10 dark:bg-purple-500/20 text-purple-600 dark:text-purple-400',
+                text: 'text-purple-600 dark:text-purple-400'
+            },
+            pink: {
+                bg: 'bg-pink-500/10 dark:bg-pink-500/20 text-pink-600 dark:text-pink-400',
+                text: 'text-pink-600 dark:text-pink-400'
+            },
+            indigo: {
+                bg: 'bg-indigo-500/10 dark:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400',
+                text: 'text-indigo-600 dark:text-indigo-400'
+            }
+        };
+
+        containerLista.innerHTML = `
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                ${itensParaExibir.map(item => {
+                    const estilo = CORES_BADGE[item.corBadge] || CORES_BADGE.purple;
+                    return `
+                    <div class="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/70 dark:border-slate-800 hover:border-purple-500/40 transition-colors">
+                        <div class="flex items-center gap-2.5 min-w-0">
+                            <div class="w-7 h-7 rounded-lg ${estilo.bg} flex items-center justify-center text-xs shrink-0 font-bold">
+                                <i class="fa-solid fa-user"></i>
+                            </div>
+                            <div class="truncate">
+                                <span class="text-xs font-bold text-slate-800 dark:text-slate-100 block truncate" title="${item.nick}">${item.nick}</span>
+                                <span class="text-[10px] font-semibold ${estilo.text}">${item.grupo}</span>
+                            </div>
+                        </div>
+                        <button type="button" class="btn-copiar-nick-individual p-1.5 rounded-lg text-slate-400 hover:text-purple-400 hover:bg-slate-200 dark:hover:bg-slate-700 transition-all shrink-0" data-nick="${item.nick}" title="Copiar nick">
+                            <i class="fa-regular fa-copy text-xs"></i>
+                        </button>
+                    </div>
+                `;}).join('')}
+            </div>
+        `;
+
+        if (typeof containerLista.querySelectorAll === 'function') {
+            containerLista.querySelectorAll('.btn-copiar-nick-individual').forEach(btn => {
+                btn.addEventListener('click', async (e) => {
+                    e.stopPropagation();
+                    const nick = btn.getAttribute('data-nick');
+                    if (nick) {
+                        await copiarParaAreaDeTransferencia(nick);
+                        const icone = btn.querySelector('i');
+                        if (icone) icone.className = 'fa-solid fa-check text-emerald-400 text-xs';
+                        setTimeout(() => {
+                            if (icone) icone.className = 'fa-regular fa-copy text-xs';
+                        }, 2000);
+                    }
+                });
+            });
+        }
+    }
+
+    /**
+     * Configura interações visuais e eventos de controle da ferramenta
+     */
+    function configurarControlesFiscalizacao() {
+        if (typeof document === 'undefined' || controlesConfigurados) return;
+        controlesConfigurados = true;
+
+        const btnToggleManual = document.getElementById('btn-toggle-edicao-manual');
+        if (btnToggleManual) {
+            btnToggleManual.addEventListener('click', () => alternarContainerManual());
+        }
+
+        const btnFecharManual = document.getElementById('btn-fechar-edicao-manual');
+        if (btnFecharManual) {
+            btnFecharManual.addEventListener('click', () => alternarContainerManual(false));
+        }
+
+        const btnReSyncManual = document.getElementById('btn-re-sincronizar-manual');
+        if (btnReSyncManual) {
+            btnReSyncManual.addEventListener('click', async () => {
+                try {
+                    await executarSincronizacaoCompleta();
+                } catch (e) { }
+            });
+        }
+
+        const btnVerMembros = document.getElementById('btn-ver-membros-forum');
+        if (btnVerMembros) {
+            btnVerMembros.addEventListener('click', abrirModalMembrosForum);
+        }
+
+        const btnFecharModal = document.getElementById('btn-fechar-modal-membros');
+        if (btnFecharModal) {
+            btnFecharModal.addEventListener('click', fecharModalMembrosForum);
+        }
+
+        const btnFecharModalRodape = document.getElementById('btn-fechar-modal-rodape');
+        if (btnFecharModalRodape) {
+            btnFecharModalRodape.addEventListener('click', fecharModalMembrosForum);
+        }
+
+        const modalMembros = document.getElementById('modal-membros-forum');
+        if (modalMembros) {
+            modalMembros.addEventListener('click', (e) => {
+                if (e.target === modalMembros) fecharModalMembrosForum();
+            });
+        }
+
+        if (typeof document.addEventListener === 'function') {
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape' && modalMembros && !modalMembros.classList.contains('hidden')) {
+                    fecharModalMembrosForum();
+                }
+            });
+        }
+
+        const tabBtns = typeof document.querySelectorAll === 'function' ? document.querySelectorAll('.tab-grupo-btn') : [];
+        if (tabBtns && typeof tabBtns.forEach === 'function') {
+            tabBtns.forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const grupo = btn.getAttribute('data-aba-grupo') || 'todos';
+                    abaModalAtiva = grupo;
+                    tabBtns.forEach(b => {
+                        b.classList.remove('bg-purple-600', 'text-white', 'shadow-sm');
+                        b.classList.add('text-slate-600', 'dark:text-slate-300');
+                    });
+                    btn.classList.add('bg-purple-600', 'text-white', 'shadow-sm');
+                    btn.classList.remove('text-slate-600', 'dark:text-slate-300');
+                    renderizarListaMembrosModal();
+                });
+            });
+        }
+
+        const inputFiltro = document.getElementById('filtro-membros-modal');
+        if (inputFiltro) {
+            inputFiltro.addEventListener('input', (e) => {
+                filtroTextoModal = e.target.value.trim();
+                renderizarListaMembrosModal();
+            });
+        }
+
+        const btnCopiarTodos = document.getElementById('btn-copiar-todos-modal');
+        if (btnCopiarTodos) {
+            btnCopiarTodos.addEventListener('click', async () => {
+                const itens = obterItensFiltradosParaExibicao(filtroTextoModal, abaModalAtiva);
+                if (itens.length === 0) return;
+
+                const nicksUnicos = Array.from(new Set(itens.map(i => i.nick)));
+                const texto = nicksUnicos.join('\n');
+                const copiou = await copiarParaAreaDeTransferencia(texto);
+                if (copiou) {
+                    const original = btnCopiarTodos.innerHTML;
+                    btnCopiarTodos.innerHTML = `<i class="fa-solid fa-check text-emerald-400"></i> ${nicksUnicos.length} nicks copiados!`;
+                    setTimeout(() => { btnCopiarTodos.innerHTML = original; }, 2500);
+                }
+            });
+        }
+
+        const btnReSync = document.getElementById('btn-re-sincronizar-modal');
+        if (btnReSync) {
+            btnReSync.addEventListener('click', async () => {
+                try {
+                    await executarSincronizacaoCompleta();
+                } catch (e) { }
+            });
+        }
+
+        ['lista-forum-professores', 'lista-forum-coordenadores', 'lista-forum-graduadores'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) {
+                el.addEventListener('input', () => {
+                    if (preenchendoProgramaticamente) return;
+                    usuarioEditouManualmente = true;
+                    atualizarIndicadorStatusEBadge();
+                });
+            }
+        });
+    }
+
+    let promessaSincronizacaoAtiva = null;
+
+    /**
+     * Retorna a promessa ativa de sincronização em segundo plano, se houver
+     */
+    function obterPromessaSincronizacao() {
+        return promessaSincronizacaoAtiva;
+    }
+
+    /**
+     * Indica se uma sincronização está ocorrendo agora
+     */
+    function estaSincronizando() {
+        return Boolean(promessaSincronizacaoAtiva);
+    }
+
+    /**
+     * Executa sincronização em segundo plano silenciosa (ao vivo na inicialização)
+     */
+    async function executarSincronizacaoSilenciosa() {
+        if (promessaSincronizacaoAtiva) return promessaSincronizacaoAtiva;
+
+        const textoStatus = document.getElementById('texto-status-forum');
+        if (textoStatus) {
+            textoStatus.innerHTML = '<i class="fa-solid fa-spinner fa-spin text-purple-400 mr-1.5"></i> Consultando subfóruns em tempo real...';
+        }
+
+        promessaSincronizacaoAtiva = (async () => {
+            try {
+                const resultados = await sincronizarTodosOsGrupos({
+                    onProgress: prog => {
+                        if (prog.grupoAtual && textoStatus) {
+                            textoStatus.innerHTML = `<i class="fa-solid fa-spinner fa-spin text-purple-400 mr-1.5"></i> Atualizando ${prog.grupoAtual} (${prog.indiceGrupo}/3)...`;
+                        }
+                    }
+                });
+
+                if (!usuarioEditouManualmente) {
+                    preencherCamposFiscalizacao(resultados);
+                    atualizarIndicadorStatusEBadge(resultados, true);
+                }
+                return resultados;
+            } catch (erro) {
+                const temDados = Boolean(
+                    document.getElementById('lista-forum-professores')?.value.trim()
+                );
+                if (temDados) {
+                    atualizarIndicadorStatusEBadge();
+                } else if (textoStatus) {
+                    textoStatus.innerHTML = '<span class="inline-block w-2 h-2 rounded-full bg-slate-400 mr-1.5"></span> Subfóruns: use a inserção manual se necessário';
+                }
+                throw erro;
+            } finally {
+                promessaSincronizacaoAtiva = null;
+            }
+        })();
+
+        return promessaSincronizacaoAtiva;
+    }
+
+    /**
+     * Executa a sincronização completa de todos os 3 grupos com feedback visual no modal e status
+     */
+    async function executarSincronizacaoCompleta(opcoes = {}) {
+        const btnReSync = document.getElementById('btn-re-sincronizar-modal');
+        const btnReSyncManual = document.getElementById('btn-re-sincronizar-manual');
+        const textoStatus = document.getElementById('texto-status-forum');
+        const iconeOriginal = btnReSync ? btnReSync.innerHTML : '';
+        const textoOriginalManual = btnReSyncManual ? btnReSyncManual.innerHTML : '';
+
+        if (btnReSync) {
+            btnReSync.disabled = true;
+            btnReSync.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-1"></i> Sincronizando grupos...';
+        }
+        if (btnReSyncManual) {
+            btnReSyncManual.disabled = true;
+            btnReSyncManual.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-1"></i> Importando...';
+        }
+        if (textoStatus) {
+            textoStatus.innerHTML = '<i class="fa-solid fa-spinner fa-spin text-purple-400 mr-1.5"></i> Sincronizando subfóruns em tempo real...';
+        }
 
         try {
             const resultados = await sincronizarTodosOsGrupos({
+                ...opcoes,
                 onProgress: prog => {
-                    if (texto) {
-                        if (prog.grupoAtual) {
-                            texto.textContent = `Puxando ${prog.grupoAtual} (${prog.indiceGrupo}/3)...`;
-                        } else if (prog.mensagem) {
-                            texto.textContent = prog.mensagem;
-                        }
+                    if (prog.grupoAtual) {
+                        const msg = `Puxando ${prog.grupoAtual} (${prog.indiceGrupo}/3)...`;
+                        if (btnReSync) btnReSync.innerHTML = `<i class="fa-solid fa-spinner fa-spin mr-1"></i> ${msg}`;
+                        if (btnReSyncManual) btnReSyncManual.innerHTML = `<i class="fa-solid fa-spinner fa-spin mr-1"></i> ${msg}`;
+                        if (textoStatus) textoStatus.innerHTML = `<i class="fa-solid fa-spinner fa-spin text-purple-400 mr-1.5"></i> ${msg}`;
                     }
                 }
             });
 
+            usuarioEditouManualmente = false;
             preencherCamposFiscalizacao(resultados);
+            atualizarIndicadorStatusEBadge(resultados, true);
 
             const total = (resultados.professores?.totalMembros || 0) +
                 (resultados.coordenadores?.totalMembros || 0) +
                 (resultados.graduadores?.totalMembros || 0);
 
-            if (icone) icone.className = 'fa-solid fa-circle-check text-emerald-300';
-            if (texto) texto.textContent = `Sincronizado (${total} membros)`;
+            if (btnReSync) {
+                btnReSync.innerHTML = `<i class="fa-solid fa-circle-check text-emerald-400 mr-1"></i> Sincronizado (${total} membros)`;
+            }
+            if (btnReSyncManual) {
+                btnReSyncManual.innerHTML = `<i class="fa-solid fa-circle-check text-emerald-400 mr-1"></i> Sincronizado (${total})`;
+            }
 
             if (typeof window !== 'undefined' && typeof window.showToast === 'function') {
                 window.showToast(`Sucesso! ${total} membros importados dos 3 subfóruns.`, 'success');
             }
 
             setTimeout(() => {
-                if (botao) botao.disabled = false;
-                if (icone) icone.className = 'fa-solid fa-rotate';
-                if (texto) texto.textContent = 'Sincronizar Grupos do Fórum';
-            }, 4000);
+                if (btnReSync) {
+                    btnReSync.disabled = false;
+                    btnReSync.innerHTML = iconeOriginal || '<i class="fa-solid fa-rotate"></i> Consultar e atualizar do fórum agora';
+                }
+                if (btnReSyncManual) {
+                    btnReSyncManual.disabled = false;
+                    btnReSyncManual.innerHTML = textoOriginalManual || '<i class="fa-solid fa-rotate"></i> Tentar importar do fórum';
+                }
+            }, 3500);
 
             return resultados;
         } catch (erro) {
             lidarComErroSincronizacao(erro);
-            if (botao) botao.disabled = false;
-            if (icone) icone.className = 'fa-solid fa-rotate';
-            if (texto) texto.textContent = 'Sincronizar Grupos do Fórum';
+            if (btnReSync) {
+                btnReSync.disabled = false;
+                btnReSync.innerHTML = iconeOriginal || '<i class="fa-solid fa-rotate"></i> Consultar e atualizar do fórum agora';
+            }
+            if (btnReSyncManual) {
+                btnReSyncManual.disabled = false;
+                btnReSyncManual.innerHTML = textoOriginalManual || '<i class="fa-solid fa-rotate"></i> Tentar importar do fórum';
+            }
             throw erro;
         }
     }
@@ -1169,6 +1642,17 @@
         restaurarCacheSeDisponivel,
         identificarGrupoDaPaginaAtual,
         obterOrigemForum,
-        fecharCanalSincronizacao
+        fecharCanalSincronizacao,
+        obterMembrosCarregados,
+        abrirModalMembrosForum,
+        fecharModalMembrosForum,
+        alternarContainerManual,
+        renderizarListaMembrosModal,
+        atualizarIndicadorStatusEBadge,
+        extrairNicksDeTextoSubforum,
+        executarSincronizacaoSilenciosa,
+        obterPromessaSincronizacao,
+        estaSincronizando,
+        obterItensFiltradosParaExibicao
     };
 }));
